@@ -1,0 +1,683 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Monte Carlo T-Junction Sim</title>
+<style>
+  :root {
+    --asphalt: #1a1d23;
+    --asphalt-light: #24282f;
+    --panel: #2a2f38;
+    --line: #3c4250;
+    --text: #e8eaed;
+    --text-dim: #8a9099;
+    --red: #e6483f;
+    --yellow: #f0b429;
+    --green: #34b56f;
+    --accent: #5b8cff;
+    --mono: 'IBM Plex Mono', 'Courier New', monospace;
+    --sans: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--asphalt); color: var(--text); font-family: var(--sans); padding: 24px; min-height: 100vh; }
+  .wrap { max-width: 1100px; margin: 0 auto; }
+  header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 20px; flex-wrap: wrap; gap: 8px; }
+  h1 { font-size: 20px; font-weight: 700; margin: 0; letter-spacing: -0.01em; }
+  h1 span { color: var(--accent); }
+  .subtitle { font-family: var(--mono); font-size: 12px; color: var(--text-dim); }
+  .layout { display: grid; grid-template-columns: 1fr 320px; gap: 16px; }
+  @media (max-width: 820px) { .layout { grid-template-columns: 1fr; } }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; }
+  .panel-title { font-family: var(--mono); font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-dim); margin: 0 0 12px 0; }
+  #junctionCanvas { width: 100%; height: auto; display: block; background: var(--asphalt-light); border-radius: 8px; }
+  .controls { display: flex; flex-direction: column; gap: 14px; }
+  .field { display: flex; flex-direction: column; gap: 6px; }
+  .field label { font-family: var(--mono); font-size: 11px; color: var(--text-dim); display: flex; justify-content: space-between; }
+  .field label b { color: var(--text); font-weight: 600; }
+  input[type=range] { -webkit-appearance: none; -moz-appearance: none; appearance: none; width: 100%; height: 4px; border-radius: 2px; background: var(--line); outline: none; }
+  input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 14px; height: 14px; border-radius: 50%; background: var(--accent); cursor: pointer; }
+  input[type=range]::-moz-range-thumb { width: 14px; height: 14px; border-radius: 50%; background: var(--accent); cursor: pointer; border: none; }
+  button { font-family: var(--sans); font-weight: 600; font-size: 13px; border: none; border-radius: 7px; padding: 11px 14px; cursor: pointer; transition: filter 0.15s, transform 0.05s; }
+  button:active { transform: scale(0.98); }
+  .btn-primary { background: var(--accent); color: #fff; }
+  .btn-secondary { background: var(--line); color: var(--text); }
+  .btn-primary:hover, .btn-secondary:hover { filter: brightness(1.1); }
+  .toggle-row { display: flex; gap: 8px; }
+  .toggle-row button { flex: 1; }
+  .toggle-row button.active { background: var(--accent); color: #fff; }
+  .toggle-row button:not(.active) { background: var(--line); color: var(--text-dim); }
+  .stat-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; margin-top: 4px; }
+  .stat { background: var(--asphalt-light); border-radius: 7px; padding: 10px; text-align: center; }
+  .stat .num { font-family: var(--mono); font-size: 20px; font-weight: 700; }
+  .stat .label { font-family: var(--mono); font-size: 9px; color: var(--text-dim); text-transform: uppercase; margin-top: 2px; }
+  .lane-row { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-top: 1px solid var(--line); }
+  .lane-row:first-of-type { border-top: none; }
+  .lane-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+  .lane-info { flex: 1; font-family: var(--mono); font-size: 12px; }
+  .lane-info .n { color: var(--text-dim); font-size: 10px; }
+  .log { font-family: var(--mono); font-size: 11px; color: var(--text-dim); max-height: 140px; overflow-y: auto; line-height: 1.6; }
+  .log .hl { color: var(--accent); }
+  footer { margin-top: 16px; font-family: var(--mono); font-size: 10px; color: var(--text-dim); text-align: center; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <h1>Monte Carlo <span>T-Junction Sim</span></h1>
+    <div class="subtitle">T-junction · North / West / East · Monte Carlo runs in Python (Flask), JS handles rendering only</div>
+  </header>
+
+  <div class="layout">
+
+    <div>
+      <div class="panel">
+        <p class="panel-title">Junction view</p>
+        <svg id="junctionCanvas" viewBox="0 0 640 420"></svg>
+      </div>
+
+      <div class="panel" style="margin-top:16px;">
+        <p class="panel-title">Decision log</p>
+        <div class="log" id="log"></div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <p class="panel-title">Control mode</p>
+      <div class="toggle-row">
+        <button id="modeMonteCarlo" class="active">Monte Carlo</button>
+        <button id="modeFixed">Fixed timer</button>
+      </div>
+
+      <div class="controls" style="margin-top:18px;">
+        <div class="field">
+          <label>Cycle budget <b id="lblCycle">60s</b></label>
+          <input type="range" id="cycleBudget" min="30" max="120" step="5" value="60">
+        </div>
+        <div class="field">
+          <label>Arrival intensity <b id="lblArrival">medium</b></label>
+          <input type="range" id="arrivalIntensity" min="1" max="3" step="1" value="2">
+        </div>
+        <div class="field">
+          <label>Sim speed <b id="lblSpeed">1x</b></label>
+          <input type="range" id="simSpeed" min="1" max="4" step="1" value="1">
+        </div>
+
+        <button class="btn-primary" id="startBtn">Start</button>
+        <button class="btn-secondary" id="resetBtn">Reset</button>
+      </div>
+
+      <p class="panel-title" style="margin-top:20px;">Approaches</p>
+      <div id="laneList"></div>
+
+      <p class="panel-title" style="margin-top:20px;">Cumulative</p>
+      <div class="stat-grid">
+        <div class="stat"><div class="num" id="statCycles">0</div><div class="label">cycles</div></div>
+        <div class="stat"><div class="num" id="statAvgWait">0</div><div class="label">avg wait</div></div>
+        <div class="stat"><div class="num" id="statCleared">0</div><div class="label">cars cleared</div></div>
+      </div>
+    </div>
+
+  </div>
+
+  <footer>T-junction layout — North has no straight option (turns left/right only); West/East can go straight or turn onto North. Cars continue driving after the turn until they exit the screen.</footer>
+</div>
+
+<script>
+/* =====================================================================
+   CONFIG
+===================================================================== */
+const APPROACHES = [
+  { id: "N", name: "North",  color: "#e6483f", baseArrival: 0.06 },
+  { id: "W", name: "West",   color: "#34b56f", baseArrival: 0.07 },
+  { id: "E", name: "East",   color: "#5b8cff", baseArrival: 0.05 },
+];
+const SECONDS_PER_CAR = 2.0;
+
+/* =====================================================================
+   GEOMETRY
+   Junction sits at JX,JY. Horizontal road runs full width (West<->East),
+   with two lanes (one each direction, offset above/below the centerline).
+   Vertical road comes down from the top (North), one lane, meeting the
+   horizontal road at the junction.
+===================================================================== */
+const JX = 320, JY = 220;
+const LANE_OFFSET = 16;      // perpendicular offset between opposing-direction lanes
+const ROAD_HALF_W = 50;      // visual road thickness / 2
+const SCREEN_LEFT = 20, SCREEN_RIGHT = 620, SCREEN_TOP = 20;
+
+// Key on-screen points used to build car paths. Each lane is defined by
+// a queue point (where cars stack up waiting) and a stop point (right at
+// the junction edge), plus exit points used after turning.
+const POINTS = {
+  N_queue:      { x: JX + LANE_OFFSET/2, y: SCREEN_TOP },
+  N_stop:       { x: JX + LANE_OFFSET/2, y: JY - ROAD_HALF_W },
+
+  W_queue:      { x: SCREEN_LEFT, y: JY - LANE_OFFSET/2 },   // West approach (heading east), upper lane
+  W_stop:       { x: JX - ROAD_HALF_W, y: JY - LANE_OFFSET/2 },
+
+  E_queue:      { x: SCREEN_RIGHT, y: JY + LANE_OFFSET/2 },  // East approach (heading west), lower lane
+  E_stop:       { x: JX + ROAD_HALF_W, y: JY + LANE_OFFSET/2 },
+};
+
+// HARDCODED MOVEMENT TABLE
+// Each turn type is defined as a list of 1 or 2 straight-line segments.
+// Each segment moves ONLY along one axis (x or y) at CAR_SPEED px/sec,
+// until that axis reaches `target`. No diagonal movement, no curves.
+// After the last segment's target is reached, the car is deleted.
+//
+// WESTBOUND_LANE_Y / EASTBOUND_LANE_Y = the y-coordinate of each direction-of-travel's lane
+// on the horizontal road. Naming is by TRAVEL DIRECTION, not by which road
+// approach it's near: WESTBOUND_LANE_Y carries traffic heading west (used
+// by East's own incoming traffic, and by anyone exiting toward West).
+// EASTBOUND_LANE_Y carries traffic heading east (West's own incoming
+// traffic, and anyone exiting toward East).
+const WESTBOUND_LANE_Y = JY + LANE_OFFSET / 2;   // lower lane — traffic heading west (same as East's incoming lane)
+const EASTBOUND_LANE_Y = JY - LANE_OFFSET / 2;   // upper lane — traffic heading east (same as West's incoming lane)
+const N_LANE_X = JX + LANE_OFFSET / 2;   // North road's southbound (moving-in) lane x-coord
+const N_EXIT_LANE_X = JX - LANE_OFFSET / 2; // North road's OTHER lane (used when exiting north after a turn)
+
+const TURN_OPTIONS = {
+  N: [
+    // North -> West (left): go down to the WESTBOUND lane (the one that
+    // actually carries traffic heading toward West, i.e. East's incoming
+    // lane), then move left (-x) until off the West edge of the screen.
+    { to: "W", label: "left", segments: [
+      { axis: "y", target: WESTBOUND_LANE_Y },
+      { axis: "x", target: SCREEN_LEFT },
+    ]},
+    // North -> East (right): go down to the EASTBOUND lane (the one that
+    // carries traffic heading toward East, i.e. West's incoming lane),
+    // then move right (+x) until off the East edge of the screen.
+    { to: "E", label: "right", segments: [
+      { axis: "y", target: EASTBOUND_LANE_Y },
+      { axis: "x", target: SCREEN_RIGHT },
+    ]},
+  ],
+  W: [
+    // West -> East (straight): just move right (+x), no turn, until off East edge.
+    { to: "E", label: "straight", segments: [
+      { axis: "x", target: SCREEN_RIGHT },
+    ]},
+    // West -> North (right turn): move right (+x) to the North road's
+    // center first, then move up (-y) until off the North (top) edge.
+    { to: "N", label: "right", segments: [
+      { axis: "x", target: N_EXIT_LANE_X },
+      { axis: "y", target: SCREEN_TOP },
+    ]},
+  ],
+  E: [
+    // East -> West (straight): just move left (-x), no turn, until off West edge.
+    { to: "W", label: "straight", segments: [
+      { axis: "x", target: SCREEN_LEFT },
+    ]},
+    // East -> North (left turn): move left (-x) to the North road's
+    // center first, then move up (-y) until off the North (top) edge.
+    { to: "N", label: "left", segments: [
+      { axis: "x", target: N_EXIT_LANE_X },
+      { axis: "y", target: SCREEN_TOP },
+    ]},
+  ],
+};
+
+// Constant speed for every car, every direction, no randomization.
+const CAR_SPEED_PX_PER_SEC = 90;
+
+function lerp(a, b, t) { return a + (b - a) * t; }
+
+/* =====================================================================
+   MONTE CARLO — now computed by the real Python backend (monte_carlo_core.py
+   via app.py), NOT in JS. This function just calls the API and returns the
+   result. Fixed Timer mode stays client-side since it has no randomness.
+===================================================================== */
+async function fetchMonteCarloSplit(queues, budget) {
+  const response = await fetch("/api/decide", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      queues: queues,
+      cycle_budget_seconds: budget,
+      arrival_rate_per_lane: APPROACHES.map(a => a.baseArrival * state.arrivalMultiplier),
+    }),
+  });
+  if (!response.ok) {
+    const errBody = await response.json().catch(() => ({}));
+    throw new Error(errBody.error || `Backend request failed (${response.status})`);
+  }
+  const data = await response.json();
+  return { split: data.split, score: data.score };
+}
+
+function fixedSplit(budget) {
+  const each = Math.floor(budget / 3 / 5) * 5;
+  return [each, each, budget - each * 2];
+}
+
+/* =====================================================================
+   STATE
+===================================================================== */
+let state = {
+  mode: "montecarlo",
+  cycleBudget: 60,
+  arrivalMultiplier: 1,
+  speed: 1,
+  running: false,
+  queues: [3, 4, 2],          // North, West, East
+  cars: [],                    // {id, approach, status, queueIdx, turn, segmentIdx, x, y}
+  phase: "idle",
+  activeApproach: -1,          // index into APPROACHES
+  phaseTimer: 0,
+  greenSplit: [20, 20, 20],
+  approachOrder: [0, 1, 2],
+  orderIdx: 0,
+  cyclesRun: 0,
+  totalCleared: 0,
+  totalWaitSum: 0,
+  nextCarId: 1,
+};
+
+/* =====================================================================
+   SVG SETUP
+===================================================================== */
+const svg = document.getElementById("junctionCanvas");
+const NS = "http://www.w3.org/2000/svg";
+function el(tag, attrs) {
+  const e = document.createElementNS(NS, tag);
+  for (const k in attrs) e.setAttribute(k, attrs[k]);
+  return e;
+}
+
+function buildStaticScene() {
+  svg.innerHTML = "";
+
+  // horizontal road (West <-> East)
+  svg.appendChild(el("rect", {
+    x: SCREEN_LEFT, y: JY - ROAD_HALF_W, width: SCREEN_RIGHT - SCREEN_LEFT, height: ROAD_HALF_W * 2,
+    fill: "#33394a",
+  }));
+  // vertical road (North down to junction)
+  svg.appendChild(el("rect", {
+    x: JX - ROAD_HALF_W, y: SCREEN_TOP, width: ROAD_HALF_W * 2, height: JY - SCREEN_TOP,
+    fill: "#33394a",
+  }));
+
+  // center dashed lines
+  svg.appendChild(el("line", { x1: SCREEN_LEFT, y1: JY, x2: JX - ROAD_HALF_W, y2: JY, stroke: "#5a6070", "stroke-width": 2, "stroke-dasharray": "10 10" }));
+  svg.appendChild(el("line", { x1: JX + ROAD_HALF_W, y1: JY, x2: SCREEN_RIGHT, y2: JY, stroke: "#5a6070", "stroke-width": 2, "stroke-dasharray": "10 10" }));
+  svg.appendChild(el("line", { x1: JX, y1: SCREEN_TOP, x2: JX, y2: JY - ROAD_HALF_W, stroke: "#5a6070", "stroke-width": 2, "stroke-dasharray": "10 10" }));
+
+  // stop lines
+  svg.appendChild(el("line", { x1: POINTS.N_stop.x - ROAD_HALF_W/2.4, y1: POINTS.N_stop.y, x2: POINTS.N_stop.x + ROAD_HALF_W/2.4, y2: POINTS.N_stop.y, stroke: "#e8eaed", "stroke-width": 3, opacity: 0.6 }));
+  svg.appendChild(el("line", { x1: POINTS.W_stop.x, y1: POINTS.W_stop.y - ROAD_HALF_W/2.4, x2: POINTS.W_stop.x, y2: POINTS.W_stop.y + ROAD_HALF_W/2.4, stroke: "#e8eaed", "stroke-width": 3, opacity: 0.6 }));
+  svg.appendChild(el("line", { x1: POINTS.E_stop.x, y1: POINTS.E_stop.y - ROAD_HALF_W/2.4, x2: POINTS.E_stop.x, y2: POINTS.E_stop.y + ROAD_HALF_W/2.4, stroke: "#e8eaed", "stroke-width": 3, opacity: 0.6 }));
+
+  // signal heads
+  const headSpecs = [
+    { id: "N", x: POINTS.N_stop.x + 30, y: POINTS.N_stop.y - 14, vertical: true },
+    { id: "W", x: POINTS.W_stop.x - 14, y: POINTS.W_stop.y - 30, vertical: false },
+    { id: "E", x: POINTS.E_stop.x + 14, y: POINTS.E_stop.y + 30, vertical: false },
+  ];
+  headSpecs.forEach(h => {
+    if (h.vertical) {
+      svg.appendChild(el("rect", { x: h.x - 12, y: h.y - 30, width: 24, height: 60, rx: 6, fill: "#15171b", stroke: "#3c4250", "stroke-width": 1.5 }));
+      ["red","yellow","green"].forEach((c, li) => {
+        svg.appendChild(el("circle", { cx: h.x, cy: h.y - 18 + li*18, r: 6, fill: "#2a2d33", id: `light_${h.id}_${c}` }));
+      });
+    } else {
+      svg.appendChild(el("rect", { x: h.x - 30, y: h.y - 12, width: 60, height: 24, rx: 6, fill: "#15171b", stroke: "#3c4250", "stroke-width": 1.5 }));
+      ["red","yellow","green"].forEach((c, li) => {
+        svg.appendChild(el("circle", { cx: h.x - 18 + li*18, cy: h.y, r: 6, fill: "#2a2d33", id: `light_${h.id}_${c}` }));
+      });
+    }
+  });
+
+  // labels
+  svg.appendChild(el("text", { x: POINTS.N_queue.x, y: SCREEN_TOP - 8, fill: "#8a9099", "font-family": "monospace", "font-size": 11, "text-anchor": "middle" })).textContent = "North";
+  svg.appendChild(el("text", { x: SCREEN_LEFT + 4, y: JY - ROAD_HALF_W - 10, fill: "#8a9099", "font-family": "monospace", "font-size": 11 })).textContent = "West";
+  svg.appendChild(el("text", { x: SCREEN_RIGHT - 32, y: JY - ROAD_HALF_W - 10, fill: "#8a9099", "font-family": "monospace", "font-size": 11 })).textContent = "East";
+
+  svg.appendChild(el("g", { id: "carLayer" }));
+}
+
+function updateSignalLights() {
+  APPROACHES.forEach((a, i) => {
+    const isGreen = state.phase === "green" && state.activeApproach === i;
+    const isYellow = state.phase === "yellow" && state.activeApproach === i;
+    document.getElementById(`light_${a.id}_red`).setAttribute("fill", (!isGreen && !isYellow) ? "#e6483f" : "#3a2020");
+    document.getElementById(`light_${a.id}_yellow`).setAttribute("fill", isYellow ? "#f0b429" : "#3a3320");
+    document.getElementById(`light_${a.id}_green`).setAttribute("fill", isGreen ? "#34b56f" : "#1f3328");
+  });
+}
+
+/* =====================================================================
+   CAR POSITION + RENDERING
+===================================================================== */
+function getQueuePoint(approachId, queueIdx) {
+  // queued cars stack backward from the stop line along their approach lane
+  const stepBack = 22;
+  if (approachId === "N") {
+    const p = POINTS.N_stop;
+    return { x: p.x, y: p.y - 20 - queueIdx * stepBack };
+  } else if (approachId === "W") {
+    const p = POINTS.W_stop;
+    return { x: p.x - 20 - queueIdx * stepBack, y: p.y };
+  } else {
+    const p = POINTS.E_stop;
+    return { x: p.x + 20 + queueIdx * stepBack, y: p.y };
+  }
+}
+
+function getCarPosition(car) {
+  if (car.status === "queued") {
+    return getQueuePoint(car.approach, car.queueIdx);
+  }
+  // status === "driving": position is tracked directly on the car (car.x, car.y)
+  // and stepped each frame in advanceDrivingCars(), no interpolation/lerp involved.
+  return { x: car.x, y: car.y };
+}
+
+function renderCars() {
+  const layer = document.getElementById("carLayer");
+  layer.innerHTML = "";
+  state.cars.forEach(car => {
+    const pos = getCarPosition(car);
+    const color = APPROACHES.find(a => a.id === car.approach).color;
+    layer.appendChild(el("rect", {
+      x: pos.x - 8, y: pos.y - 5, width: 16, height: 10, rx: 3,
+      fill: color, opacity: car.status === "driving" ? 1 : 0.9,
+    }));
+  });
+}
+
+/* =====================================================================
+   SIMULATION LOOP
+===================================================================== */
+let tickHandle = null;
+const TICK_MS = 200;
+
+function log(msg) {
+  const logEl = document.getElementById("log");
+  const line = document.createElement("div");
+  line.innerHTML = msg;
+  logEl.prepend(line);
+  while (logEl.children.length > 40) logEl.removeChild(logEl.lastChild);
+}
+
+function reflowQueue(approachId) {
+  let idx = 0;
+  state.cars.forEach(c => {
+    if (c.approach === approachId && c.status === "queued") {
+      c.queueIdx = idx;
+      idx++;
+    }
+  });
+}
+
+async function startNewCycle() {
+  // Set an explicit 'deciding' phase IMMEDIATELY (synchronously) before
+  // any await, so the tick loop (which runs every 200ms regardless) has
+  // a safe, well-defined state to sit in while we wait on the network
+  // request to the Python backend. Without this, the tick loop could see
+  // a stale phase/timer mid-decision and misbehave.
+  state.phase = "deciding";
+  state.cyclesRun++;
+  const cycleNumber = state.cyclesRun;
+
+  let result;
+  if (state.mode === "montecarlo") {
+    try {
+      result = await fetchMonteCarloSplit(state.queues, state.cycleBudget);
+    } catch (err) {
+      log(`<span class="hl">Backend error:</span> ${err.message} — falling back to fixed timer for this cycle`);
+      result = { split: fixedSplit(state.cycleBudget), score: null };
+    }
+  } else {
+    result = { split: fixedSplit(state.cycleBudget), score: null };
+  }
+
+  // Guard: if Reset was clicked while we were waiting on the network,
+  // state.cyclesRun will no longer match — bail out instead of resuming
+  // a cycle that's no longer relevant.
+  if (state.cyclesRun !== cycleNumber || !state.running) return;
+
+  state.greenSplit = result.split;
+  state.approachOrder = [0, 1, 2];
+  state.orderIdx = 0;
+  state.activeApproach = state.approachOrder[0];
+  state.phase = "green";
+  state.phaseTimer = state.greenSplit[state.activeApproach];
+
+  const splitStr = APPROACHES.map((a,i) => `${a.id}:${state.greenSplit[i]}s`).join("  ");
+  if (state.mode === "montecarlo" && result.score !== null) {
+    log(`Cycle ${state.cyclesRun} — Monte Carlo (Python backend): <span class="hl">${splitStr}</span> (avg ${result.score.toFixed(1)} left waiting)`);
+  } else {
+    log(`Cycle ${state.cyclesRun} — Fixed timer: ${splitStr}`);
+  }
+  document.getElementById("statCycles").textContent = state.cyclesRun;
+  updateSignalLights();
+  refreshApproachList();
+}
+
+function advancePhase() {
+  if (state.phase === "green") {
+    state.phase = "yellow";
+    state.phaseTimer = 3;
+  } else if (state.phase === "yellow") {
+    state.orderIdx++;
+    if (state.orderIdx < state.approachOrder.length) {
+      state.activeApproach = state.approachOrder[state.orderIdx];
+      state.phase = "green";
+      state.phaseTimer = state.greenSplit[state.activeApproach];
+    } else {
+      startNewCycle(); // intentionally not awaited here — tick() must stay
+                        // synchronous; startNewCycle sets phase="deciding"
+                        // synchronously first, so tick() sees a safe state
+                        // on its very next call regardless of when the
+                        // network request actually resolves.
+    }
+  }
+  updateSignalLights();
+  refreshApproachList();
+}
+
+function releaseCarIfDue() {
+  const approach = APPROACHES[state.activeApproach];
+  const queuedCars = state.cars.filter(c => c.approach === approach.id && c.status === "queued");
+  if (queuedCars.length === 0) return;
+  const front = queuedCars.reduce((a, b) => (a.queueIdx < b.queueIdx ? a : b));
+
+  // pick a random legal turn for this approach (never "straight" for North,
+  // since no such option exists; West/East may go straight or turn)
+  const options = TURN_OPTIONS[approach.id];
+  const turn = options[Math.floor(Math.random() * options.length)];
+  const stopPoint = POINTS[`${approach.id}_stop`];
+
+  front.status = "driving";
+  front.turn = turn;
+  front.segmentIdx = 0;     // which segment of turn.segments we're currently driving
+  front.x = stopPoint.x;    // start exactly at the stop line position
+  front.y = stopPoint.y;
+
+  state.queues[state.activeApproach] = Math.max(0, state.queues[state.activeApproach] - 1);
+  state.totalCleared++;
+  reflowQueue(approach.id);
+}
+
+function advanceDrivingCars(dt) {
+  const stepSize = CAR_SPEED_PX_PER_SEC * dt;
+
+  state.cars = state.cars.filter(car => {
+    if (car.status !== "driving") return true;
+
+    const segment = car.turn.segments[car.segmentIdx];
+    const axis = segment.axis;   // "x" or "y"
+    const target = segment.target;
+
+    if (axis === "x") {
+      if (car.x < target) {
+        car.x = Math.min(car.x + stepSize, target);
+      } else {
+        car.x = Math.max(car.x - stepSize, target);
+      }
+    } else {
+      if (car.y < target) {
+        car.y = Math.min(car.y + stepSize, target);
+      } else {
+        car.y = Math.max(car.y - stepSize, target);
+      }
+    }
+
+    const reachedTarget = (axis === "x") ? car.x === target : car.y === target;
+    if (reachedTarget) {
+      car.segmentIdx++;
+      if (car.segmentIdx >= car.turn.segments.length) {
+        return false; // reached the final segment's target (the road's edge) — delete
+      }
+    }
+    return true;
+  });
+}
+
+function spawnArrival(approachId) {
+  const idx = state.cars.filter(c => c.approach === approachId && c.status === "queued").length;
+  state.cars.push({ id: state.nextCarId++, approach: approachId, status: "queued", queueIdx: idx });
+}
+
+function tick() {
+  if (!state.running) return;
+  const dt = (TICK_MS / 1000) * state.speed;
+
+  // random new arrivals
+  APPROACHES.forEach((a, i) => {
+    const prob = a.baseArrival * state.arrivalMultiplier * dt;
+    if (Math.random() < prob) {
+      state.queues[i]++;
+      spawnArrival(a.id);
+    }
+  });
+
+  // release a car from the front of the active (green) approach periodically
+  if (state.phase === "green" && state.activeApproach >= 0) {
+    state._departTimer = (state._departTimer ?? SECONDS_PER_CAR) - dt;
+    if (state._departTimer <= 0) {
+      releaseCarIfDue();
+      state._departTimer += SECONDS_PER_CAR;
+    }
+  }
+
+  // While we're waiting on the backend for a new cycle's split, skip
+  // timer/phase advancement entirely — nothing should progress until
+  // startNewCycle() finishes and sets phase back to "green".
+  if (state.phase === "deciding") {
+    renderCars();
+    refreshApproachList();
+    return;
+  }
+
+  advanceDrivingCars(dt);
+
+  state.phaseTimer -= dt;
+  if (state.phaseTimer <= 0) advancePhase();
+
+  renderCars();
+  refreshApproachList();
+}
+
+function refreshApproachList() {
+  const listEl = document.getElementById("laneList");
+  listEl.innerHTML = "";
+  if (state.phase === "deciding") {
+    const note = document.createElement("div");
+    note.style.cssText = "font-family: var(--mono); font-size: 11px; color: var(--accent); padding: 6px 0;";
+    note.textContent = "⏳ asking Python backend for next split…";
+    listEl.appendChild(note);
+  }
+  APPROACHES.forEach((a, i) => {
+    const isActive = state.activeApproach === i && state.phase !== "idle" && state.phase !== "deciding";
+    const statusText = isActive ? (state.phase === "green" ? "GREEN" : "YELLOW") : "red";
+    const row = document.createElement("div");
+    row.className = "lane-row";
+    row.innerHTML = `
+      <div class="lane-dot" style="background:${a.color}"></div>
+      <div class="lane-info">${a.name}<div class="n">${state.queues[i]} queued · ${statusText}</div></div>
+    `;
+    listEl.appendChild(row);
+  });
+}
+
+/* =====================================================================
+   UI WIRING
+===================================================================== */
+document.getElementById("cycleBudget").addEventListener("input", e => {
+  state.cycleBudget = parseInt(e.target.value);
+  document.getElementById("lblCycle").textContent = state.cycleBudget + "s";
+});
+document.getElementById("arrivalIntensity").addEventListener("input", e => {
+  const map = {1: "low", 2: "medium", 3: "high"};
+  const mult = {1: 0.5, 2: 1, 3: 2};
+  state.arrivalMultiplier = mult[e.target.value];
+  document.getElementById("lblArrival").textContent = map[e.target.value];
+});
+document.getElementById("simSpeed").addEventListener("input", e => {
+  state.speed = parseInt(e.target.value);
+  document.getElementById("lblSpeed").textContent = state.speed + "x";
+});
+document.getElementById("modeMonteCarlo").addEventListener("click", () => {
+  state.mode = "montecarlo";
+  document.getElementById("modeMonteCarlo").classList.add("active");
+  document.getElementById("modeFixed").classList.remove("active");
+});
+document.getElementById("modeFixed").addEventListener("click", () => {
+  state.mode = "fixed";
+  document.getElementById("modeFixed").classList.add("active");
+  document.getElementById("modeMonteCarlo").classList.remove("active");
+});
+document.getElementById("startBtn").addEventListener("click", () => {
+  state.running = !state.running;
+  document.getElementById("startBtn").textContent = state.running ? "Pause" : "Start";
+  if (state.running && state.phase === "idle") {
+    startNewCycle(); // async — sets "deciding" phase synchronously, then
+                      // updates lights/state itself once the fetch resolves
+  }
+  if (state.running && !tickHandle) {
+    tickHandle = setInterval(tick, TICK_MS);
+  }
+});
+document.getElementById("resetBtn").addEventListener("click", () => {
+  state.running = false;
+  clearInterval(tickHandle);
+  tickHandle = null;
+  document.getElementById("startBtn").textContent = "Start";
+  state.queues = [3, 4, 2];
+  state.cars = [];
+  [3, 4, 2].forEach((count, i) => {
+    for (let q = 0; q < count; q++) spawnArrival(APPROACHES[i].id);
+  });
+  state.phase = "idle";
+  state.activeApproach = -1;
+  state.cyclesRun = 0;
+  state.totalCleared = 0;
+  state._departTimer = SECONDS_PER_CAR;
+  document.getElementById("statCycles").textContent = "0";
+  document.getElementById("statCleared").textContent = "0";
+  document.getElementById("log").innerHTML = "";
+  buildStaticScene();
+  updateSignalLights();
+  refreshApproachList();
+  renderCars();
+});
+
+/* init */
+buildStaticScene();
+[3, 4, 2].forEach((count, i) => {
+  for (let q = 0; q < count; q++) spawnArrival(APPROACHES[i].id);
+});
+updateSignalLights();
+refreshApproachList();
+renderCars();
+setInterval(() => {
+  document.getElementById("statCleared").textContent = state.totalCleared;
+}, 200);
+</script>
+</body>
+</html>
