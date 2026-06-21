@@ -144,6 +144,7 @@ def apply_cycle(queue_lengths, green_split, rng):
     new_queues = []
     total_cleared = 0
     total_after = 0
+    total_arrived = 0
     for lane in range(NUM_LANES):
         queue = queue_lengths[lane]
         max_cleared = green_split[lane] / SECONDS_PER_CAR
@@ -155,7 +156,8 @@ def apply_cycle(queue_lengths, green_split, rng):
         new_queues.append(new_queue)
         total_cleared += cleared
         total_after += new_queue
-    return new_queues, total_cleared, total_after
+        total_arrived += new_arrivals
+    return new_queues, total_cleared, total_after, total_arrived
 
 
 # ----------------------------------------------------------------------
@@ -182,27 +184,28 @@ def run_strategy(strategy_name, decide_split_fn, rng_seed):
     queues = [4, 2, 3]  # same starting queues every run, for fair comparison
     history = []
 
-    print(f"\n{'='*70}")
+    print(f"\n{'='*86}")
     print(f"  RUNNING: {strategy_name}")
-    print(f"{'='*70}")
-    print(f"{'Cycle':>5} | {'Queues before':>16} | {'Green split':>16} | {'Cleared':>7} | {'Left waiting':>12}")
-    print("-" * 70)
+    print(f"{'='*86}")
+    print(f"{'Cycle':>5} | {'Queues before':>16} | {'Green split':>16} | {'Cleared':>7} | {'Arrived':>7} | {'Left waiting':>12}")
+    print("-" * 86)
 
     for cycle_num in range(1, NUM_CYCLES_TO_RUN + 1):
         split = decide_split_fn(queues, decision_rng)
-        new_queues, cleared, left_waiting = apply_cycle(queues, split, outcome_rng)
+        new_queues, cleared, left_waiting, arrived = apply_cycle(queues, split, outcome_rng)
 
         history.append({
             "cycle": cycle_num,
             "queues_before": list(queues),
             "split": split,
             "cleared": cleared,
+            "arrived": arrived,
             "left_waiting": left_waiting,
         })
 
         queues_str = "/".join(str(q) for q in [round(q) for q in queues])
         split_str = "/".join(str(s) for s in split)
-        print(f"{cycle_num:>5} | {queues_str:>16} | {split_str:>16} | {cleared:>7.0f} | {left_waiting:>12.1f}")
+        print(f"{cycle_num:>5} | {queues_str:>16} | {split_str:>16} | {cleared:>7.0f} | {arrived:>7} | {left_waiting:>12.1f}")
 
         queues = new_queues
 
@@ -215,11 +218,13 @@ def run_strategy(strategy_name, decide_split_fn, rng_seed):
 
 def summarize(history):
     total_cleared = sum(h["cleared"] for h in history)
+    total_arrived = sum(h["arrived"] for h in history)
     avg_left_waiting = sum(h["left_waiting"] for h in history) / len(history)
     max_left_waiting = max(h["left_waiting"] for h in history)
     final_queue_total = sum(history[-1]["queues_before"]) if history else 0
     return {
         "total_cleared": total_cleared,
+        "total_arrived": total_arrived,
         "avg_left_waiting": avg_left_waiting,
         "max_left_waiting": max_left_waiting,
         "final_backlog": history[-1]["left_waiting"],
@@ -235,6 +240,7 @@ def print_comparison_table(mc_summary, fixed_summary):
 
     rows = [
         ("Total cars cleared", "total_cleared", "{:.0f}"),
+        ("Total cars arrived", "total_arrived", "{:.0f}"),
         ("Avg cars left waiting/cycle", "avg_left_waiting", "{:.2f}"),
         ("Worst cycle (cars waiting)", "max_left_waiting", "{:.1f}"),
         ("Final backlog", "final_backlog", "{:.1f}"),

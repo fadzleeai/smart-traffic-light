@@ -273,6 +273,7 @@ let state = {
   cyclesRun: 0,
   totalCleared: 0,
   totalWaitSum: 0,
+  simTime: 0,
   nextCarId: 1,
 };
 
@@ -500,6 +501,7 @@ function releaseCarIfDue() {
 
   state.queues[state.activeApproach] = Math.max(0, state.queues[state.activeApproach] - 1);
   state.totalCleared++;
+  state.totalWaitSum += Math.max(0, state.simTime - (front.spawnedAt ?? state.simTime));
   reflowQueue(approach.id);
 }
 
@@ -540,12 +542,13 @@ function advanceDrivingCars(dt) {
 
 function spawnArrival(approachId) {
   const idx = state.cars.filter(c => c.approach === approachId && c.status === "queued").length;
-  state.cars.push({ id: state.nextCarId++, approach: approachId, status: "queued", queueIdx: idx });
+  state.cars.push({ id: state.nextCarId++, approach: approachId, status: "queued", queueIdx: idx, spawnedAt: state.simTime });
 }
 
 function tick() {
   if (!state.running) return;
   const dt = (TICK_MS / 1000) * state.speed;
+  state.simTime += dt;
 
   // random new arrivals
   APPROACHES.forEach((a, i) => {
@@ -657,9 +660,12 @@ document.getElementById("resetBtn").addEventListener("click", () => {
   state.activeApproach = -1;
   state.cyclesRun = 0;
   state.totalCleared = 0;
+  state.totalWaitSum = 0;
+  state.simTime = 0;
   state._departTimer = SECONDS_PER_CAR;
   document.getElementById("statCycles").textContent = "0";
   document.getElementById("statCleared").textContent = "0";
+  document.getElementById("statAvgWait").textContent = "0";
   document.getElementById("log").innerHTML = "";
   buildStaticScene();
   updateSignalLights();
@@ -677,6 +683,8 @@ refreshApproachList();
 renderCars();
 setInterval(() => {
   document.getElementById("statCleared").textContent = state.totalCleared;
+  document.getElementById("statAvgWait").textContent =
+    state.totalCleared > 0 ? (state.totalWaitSum / state.totalCleared).toFixed(1) + "s" : "0";
 }, 200);
 </script>
 </body>
