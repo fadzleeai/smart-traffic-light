@@ -524,7 +524,7 @@ def camera_and_detection_loop(detector: YOLOVehicleDetector):
                 last_display = None
 
                 while time.time() < deadline:
-                    bgr = picam2.capture_array()
+                    bgr = cv2.cvtColor(picam2.capture_array(), cv2.COLOR_RGB2BGR)
                     now = time.time()
 
                     if now - last_detect >= DETECTION_INTERVAL:
