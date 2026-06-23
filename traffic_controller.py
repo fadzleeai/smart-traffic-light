@@ -38,7 +38,6 @@ import time
 
 import cv2
 import numpy as np
-import onnxruntime as ort
 import RPi.GPIO as gp
 from picamera2 import Picamera2
 from picamera2.encoders import MJPEGEncoder
@@ -63,7 +62,7 @@ DETECTION_INTERVAL  = 1.0    # seconds between YOLO grabs within each window
 
 # YOLO  ← set YOLO_MODEL_PATH to wherever your .onnx lives
 YOLO_MODEL_PATH     = "best (1).onnx"
-YOLO_INPUT_SIZE     = (320, 320)
+YOLO_INPUT_SIZE     = (640, 640)
 CONF_THRESHOLD      = 0.40
 # COCO class IDs that count as "vehicles"
 VEHICLE_CLASS_IDS   = frozenset({2, 3, 5, 7})   # car, motorcycle, bus, truck
@@ -184,14 +183,16 @@ def mc_best_split_crn(
 
 class YOLOVehicleDetector:
     """
-    Uses onnxruntime to load a YOLOv8-exported ONNX model and count vehicles
-    in a single BGR frame. onnxruntime handles the DFL reshape layer that
-    OpenCV DNN cannot.
+    Wraps cv2.dnn to load a YOLOv8-exported ONNX model and count vehicles
+    in a single BGR frame.
 
     YOLOv8 ONNX output layout (post-export):
         shape  → (1, 84, 8400)
         cols 0-3  → bbox (cx, cy, w, h)   — not needed for counting
         cols 4-83 → class scores for 80 COCO classes
+
+    Unlike v5/v7 there is NO separate objectness score; the class score IS
+    the final confidence.
     """
 
     def __init__(
@@ -202,8 +203,7 @@ class YOLOVehicleDetector:
         vehicle_class_ids       = VEHICLE_CLASS_IDS,
     ):
         print(f"[YOLO] Loading model: {model_path}")
-        self.session         = ort.InferenceSession(model_path)
-        self.input_name      = self.session.get_inputs()[0].name
+        self.net             = cv2.dnn.readNetFromONNX(model_path)
         self.conf_threshold  = conf_threshold
         self.input_size      = input_size
         self._vehicle_ids    = np.array(list(vehicle_class_ids), dtype=np.int32)
@@ -218,13 +218,15 @@ class YOLOVehicleDetector:
         if bgr_frame is None or bgr_frame.size == 0:
             return 0
 
-        img = cv2.resize(bgr_frame, self.input_size)
-        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        img = img.astype(np.float32) / 255.0
-        img = np.transpose(img, (2, 0, 1))   # HWC → CHW
-        img = np.expand_dims(img, 0)          # add batch dim
-
-        raw = self.session.run(None, {self.input_name: img})[0]  # (1, 84, 8400)
+        blob = cv2.dnn.blobFromImage(
+            bgr_frame,
+            scalefactor = 1 / 255.0,
+            size        = self.input_size,
+            swapRB      = True,
+            crop        = False,
+        )
+        self.net.setInput(blob)
+        raw = self.net.forward()          # (1, 84, 8400)
 
         preds      = raw[0].T             # (8400, 84)
         cls_scores = preds[:, 4:]         # (8400, 80)  — skip bbox cols
