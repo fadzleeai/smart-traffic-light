@@ -19,36 +19,135 @@ PORT = 8000
 CAMERAS_TO_CYCLE = ["B", "C", "D"]
 CYCLE_TIME = 5 # Seconds to stream each camera
 
+# Tracks which camera is currently active — updated by camera_cycle_worker
+active_camera = None
+
 # 1. DYNAMIC HTML GENERATOR
 def generate_dashboard_html(cameras):
-    html = """\
+    cam_ids = ", ".join(f'"{c}"' for c in cameras)
+    html = f"""\
     <html>
     <head>
-        <title>Arducam Dynamic Dashboard</title>
+        <title>Traffic Camera Dashboard</title>
         <style>
-            body { margin:0; background:#121212; color: #fff; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
-            h2 { text-align: center; margin-top: 20px; letter-spacing: 2px; }
-            .dashboard { display: flex; justify-content: center; gap: 40px; margin-top: 30px; padding: 0 20px; flex-wrap: wrap; }
-            .cam-container { background: #1e1e1e; padding: 15px; border-radius: 8px; border: 1px solid #333; text-align: center; box-shadow: 0 4px 15px rgba(0,0,0,0.5); }
-            .cam-container h3 { margin-top: 0; color: #4CAF50; }
-            img { width: 100%; max-width: 600px; height: auto; border-radius: 4px; background: #000; }
+            * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+            body {{ background: #0d0d0d; color: #fff; font-family: 'Segoe UI', sans-serif; }}
+
+            header {{
+                display: flex; align-items: center; justify-content: center;
+                gap: 12px; padding: 18px 0 10px;
+            }}
+            header h2 {{ font-size: 1.3rem; letter-spacing: 3px; color: #e0e0e0; }}
+            .dot {{ width: 10px; height: 10px; border-radius: 50%; background: #4CAF50;
+                    box-shadow: 0 0 8px #4CAF50; animation: pulse 1.5s infinite; }}
+            @keyframes pulse {{ 0%,100%{{ opacity:1 }} 50%{{ opacity:0.3 }} }}
+
+            .dashboard {{
+                display: flex; justify-content: center; gap: 28px;
+                padding: 20px; flex-wrap: wrap;
+            }}
+
+            .cam-card {{
+                background: #1a1a1a;
+                border: 2px solid #333;
+                border-radius: 10px;
+                padding: 14px;
+                text-align: center;
+                width: 340px;
+                transition: border-color 0.3s, box-shadow 0.3s, opacity 0.3s;
+                opacity: 0.45;
+            }}
+            .cam-card.active {{
+                border-color: #4CAF50;
+                box-shadow: 0 0 18px rgba(76,175,80,0.55);
+                opacity: 1;
+            }}
+
+            .cam-header {{
+                display: flex; align-items: center; justify-content: center;
+                gap: 10px; margin-bottom: 10px;
+            }}
+            .cam-header h3 {{ font-size: 1rem; letter-spacing: 1px; color: #ccc; }}
+            .cam-card.active .cam-header h3 {{ color: #4CAF50; }}
+
+            .live-badge {{
+                display: none; align-items: center; gap: 5px;
+                background: #c0392b; color: #fff;
+                font-size: 0.68rem; font-weight: 700; letter-spacing: 1px;
+                padding: 2px 8px; border-radius: 4px;
+            }}
+            .live-badge .rec {{ width: 7px; height: 7px; border-radius: 50%;
+                                background: #fff; animation: pulse 0.9s infinite; }}
+            .cam-card.active .live-badge {{ display: flex; }}
+
+            .status-label {{
+                font-size: 0.7rem; color: #555; letter-spacing: 1px;
+                margin-bottom: 8px; text-transform: uppercase;
+            }}
+            .cam-card.active .status-label {{ color: #4CAF50; }}
+
+            img {{
+                width: 100%; border-radius: 6px; background: #000;
+                display: block;
+            }}
         </style>
     </head>
     <body>
-      <h2>SECURITY DASHBOARD - AUTO CYCLING</h2>
+      <header>
+        <div class="dot"></div>
+        <h2>TRAFFIC CAMERA DASHBOARD</h2>
+        <div class="dot"></div>
+      </header>
+
       <div class="dashboard">
     """
-    
+
     for cam in cameras:
         html += f"""
-          <div class="cam-container">
-              <h3>PORT {cam}</h3>
-              <img src="stream_{cam}.mjpg" alt="Camera {cam} Feed" />
+        <div class="cam-card" id="card-{cam}">
+          <div class="cam-header">
+            <h3>LANE {cam}</h3>
+            <div class="live-badge"><div class="rec"></div> LIVE</div>
           </div>
+          <div class="status-label" id="status-{cam}">STANDBY</div>
+          <img src="stream_{cam}.mjpg" alt="Lane {cam}" />
+        </div>
         """
-        
-    html += """
+
+    html += f"""
       </div>
+
+      <script>
+        const cameras = [{cam_ids}];
+        let currentActive = null;
+
+        function updateActive(cam) {{
+          if (cam === currentActive) return;
+          cameras.forEach(c => {{
+            const card   = document.getElementById('card-' + c);
+            const status = document.getElementById('status-' + c);
+            if (c === cam) {{
+              card.classList.add('active');
+              status.textContent = 'LIVE';
+            }} else {{
+              card.classList.remove('active');
+              status.textContent = 'STANDBY';
+            }}
+          }});
+          currentActive = cam;
+        }}
+
+        async function poll() {{
+          try {{
+            const r = await fetch('/active_cam');
+            const d = await r.json();
+            if (d.cam) updateActive(d.cam);
+          }} catch(e) {{}}
+        }}
+
+        poll();
+        setInterval(poll, 500);
+      </script>
     </body>
     </html>
     """
@@ -104,6 +203,15 @@ class StreamingHandler(server.BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(content)
 
+        elif self.path == "/active_cam":
+            import json
+            body = json.dumps({"cam": active_camera}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
         elif self.path.startswith("/stream_") and self.path.endswith(".mjpg"):
             cam_id = self.path.replace("/stream_", "").replace(".mjpg", "")
             if cam_id in CAMERAS_TO_CYCLE:
@@ -148,11 +256,13 @@ def setup_hardware(camera_port):
     time.sleep(1.5)
 
 def camera_cycle_worker():
+    global active_camera
     idx = 0
     while True:
         active_cam = CAMERAS_TO_CYCLE[idx]
         print(f"--- Activating Camera {active_cam} ---")
-        
+        active_camera = active_cam
+
         setup_hardware(active_cam)
         active_buffer = outputs[active_cam]
         
