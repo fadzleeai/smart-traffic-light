@@ -59,7 +59,7 @@ CAMERAS_TO_CYCLE    = ["B", "C", "D"]      # one camera = one traffic lane
                                             # is hardcoded for 3 lanes
 
 # Camera timing
-CYCLE_TIME          = 5      # seconds each camera stays active per round
+CYCLE_TIME          = 10     # seconds each camera stays active per round
 DETECTION_INTERVAL  = 1.0    # seconds between YOLO grabs within each window
 
 # YOLO  ← set YOLO_MODEL_PATH to wherever your .onnx lives
