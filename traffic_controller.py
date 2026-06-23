@@ -69,6 +69,18 @@ CONF_THRESHOLD      = 0.40
 # COCO class IDs that count as "vehicles"
 VEHICLE_CLASS_IDS   = frozenset({2, 3, 5, 7})   # car, motorcycle, bus, truck
 
+# Traffic lights — BCM pin numbers from hardware spec
+TRAFFIC_LIGHTS = {
+    "A": {"red": 5,  "yellow": 6,  "green": 12},
+    "B": {"red": 13, "yellow": 19, "green": 16},
+    "C": {"red": 26, "yellow": 20, "green": 21},
+}
+YELLOW_TIME = 3   # seconds for yellow phase before switching
+
+# Camera B → Light A, Camera C → Light B, Camera D → Light C
+# Update this mapping once physical wiring is verified
+CAMERA_TO_LIGHT = {"B": "A", "C": "B", "D": "C"}
+
 # Monte Carlo
 MC_CYCLE_BUDGET     = 60    # total green-time budget per signal cycle (seconds)
 MC_MIN_GREEN        = 5     # minimum green time per lane (seconds)
@@ -399,19 +411,63 @@ _CAM_HW = {
 
 def setup_gpio():
     gp.setwarnings(False)
-    gp.setmode(gp.BOARD)
-    for pin in (7, 11, 12):
+    gp.setmode(gp.BCM)
+    # Camera multiplexer pins (BCM equivalents of BOARD 7, 11, 12)
+    for pin in (4, 17, 18):
         gp.setup(pin, gp.OUT)
+    # Traffic light pins — start all red
+    for lane in TRAFFIC_LIGHTS.values():
+        for pin in lane.values():
+            gp.setup(pin, gp.OUT)
+            gp.output(pin, False)
+    all_red()
 
 
 def activate_camera(cam_id: str):
     """Select the given camera port via I²C + GPIO multiplexer."""
     hw = _CAM_HW[cam_id.upper()]
     os.system(f"sudo i2cset -y 10 0x70 0x00 {hw['i2c']}")
-    gp.output(7,  hw["pins"][0])
-    gp.output(11, hw["pins"][1])
-    gp.output(12, hw["pins"][2])
+    gp.output(4,  hw["pins"][0])
+    gp.output(17, hw["pins"][1])
+    gp.output(18, hw["pins"][2])
     time.sleep(1.5)   # electrical + sensor warm-up
+
+
+# ─────────────────────────── TRAFFIC LIGHT CONTROL ──────────────────────────
+
+def _set_light(light_id: str, red: bool, yellow: bool, green: bool):
+    pins = TRAFFIC_LIGHTS[light_id]
+    gp.output(pins["red"],    red)
+    gp.output(pins["yellow"], yellow)
+    gp.output(pins["green"],  green)
+
+
+def all_red():
+    for light_id in TRAFFIC_LIGHTS:
+        _set_light(light_id, red=True, yellow=False, green=False)
+
+
+def run_traffic_cycle(best_split: list):
+    """Run one full green-time cycle based on Monte Carlo split.
+    Sequence per lane: green → yellow (YELLOW_TIME s) → red, then next lane.
+    """
+    all_red()
+    for cam_id, green_seconds in zip(CAMERAS_TO_CYCLE, best_split):
+        light_id = CAMERA_TO_LIGHT[cam_id]
+        print(f"[LIGHT] Lane {light_id} → GREEN for {green_seconds}s")
+        _set_light(light_id, red=False, yellow=False, green=True)
+        time.sleep(green_seconds)
+
+        print(f"[LIGHT] Lane {light_id} → YELLOW")
+        _set_light(light_id, red=False, yellow=True, green=False)
+        time.sleep(YELLOW_TIME)
+
+        print(f"[LIGHT] Lane {light_id} → RED")
+        _set_light(light_id, red=True, yellow=False, green=False)
+
+    print("[LIGHT] Cycle complete — all red")
+
+# ─────────────────────────────────────────────────────────────────────────────
 
 
 def jpeg_to_bgr(jpeg_bytes: bytes):
@@ -444,6 +500,7 @@ def camera_and_detection_loop(detector: YOLOVehicleDetector):
     global active_camera
     while True:
         queue_counts: list[int] = []
+        all_red()   # keep lights red during the detection/scanning phase
 
         for cam_id in CAMERAS_TO_CYCLE:
             print(f"\n[CAM] ── Activating camera {cam_id} ──")
@@ -512,9 +569,7 @@ def camera_and_detection_loop(detector: YOLOVehicleDetector):
         for cam_id, green_s in zip(CAMERAS_TO_CYCLE, best_split):
             print(f"     Lane {cam_id} → {green_s}s green")
 
-        # ── TODO (next step): send timing to Arduino ──────────────────────
-        # send_to_arduino(best_split)
-        # ─────────────────────────────────────────────────────────────────
+        run_traffic_cycle(best_split)
 
 
 # ─────────────────────────── ENTRY POINT ─────────────────────────────────────
