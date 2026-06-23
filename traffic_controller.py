@@ -209,7 +209,7 @@ class YOLOVehicleDetector:
         self._vehicle_ids    = np.array(list(vehicle_class_ids), dtype=np.int32)
         print("[YOLO] Model ready")
 
-    def count_vehicles(self, bgr_frame) -> int:
+    def count_vehicles(self, bgr_frame) -> int: 
         """
         Run inference on one BGR frame.
         Returns the integer number of vehicle detections above the
