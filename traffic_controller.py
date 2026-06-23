@@ -63,7 +63,7 @@ DETECTION_INTERVAL  = 1.0    # seconds between YOLO grabs within each window
 
 # YOLO  ← set YOLO_MODEL_PATH to wherever your .onnx lives
 YOLO_MODEL_PATH     = "best (1).onnx"
-YOLO_INPUT_SIZE     = (640, 640)
+YOLO_INPUT_SIZE     = (320, 320)
 CONF_THRESHOLD      = 0.40
 # COCO class IDs that count as "vehicles"
 VEHICLE_CLASS_IDS   = frozenset({2, 3, 5, 7})   # car, motorcycle, bus, truck
