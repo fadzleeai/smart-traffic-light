@@ -157,11 +157,12 @@
         </div>
         <div class="field">
           <label>Sim speed <b id="lblSpeed">1x</b></label>
-          <input type="range" id="simSpeed" min="1" max="20" step="1" value="1">
+          <input type="range" id="simSpeed" min="1" max="100" step="1" value="1">
         </div>
 
         <button class="btn-primary" id="startBtn">Start</button>
         <button class="btn-secondary" id="resetBtn">Reset</button>
+        <button class="btn-secondary" id="sim24Btn" style="background:var(--asphalt-light); border:1px solid var(--accent); color:var(--accent);">⏱ Sim 24h</button>
       </div>
 
       <p class="panel-title" style="margin-top:20px;">Approaches</p>
@@ -175,6 +176,27 @@
       </div>
     </div>
 
+  </div>
+
+  <!-- 24-hour replay panel — shown only while sim24 is running -->
+  <div id="sim24Panel" class="panel" style="margin-top:16px; display:none;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; flex-wrap:wrap; gap:8px;">
+      <div style="display:flex; align-items:center; gap:12px;">
+        <p class="panel-title" style="margin:0;">24-hour replay</p>
+        <span id="sim24Clock" style="font-family:var(--mono); font-size:18px; font-weight:700; color:var(--accent);">00:00</span>
+      </div>
+      <div style="display:flex; gap:10px; align-items:center; font-family:var(--mono); font-size:11px; color:var(--text-dim);">
+        <span id="sim24Progress">Loading…</span>
+        <button id="sim24StopBtn" style="font-family:var(--sans); font-weight:600; font-size:11px; background:var(--line); color:var(--text); border:none; border-radius:6px; padding:5px 12px; cursor:pointer;">✕ Stop</button>
+      </div>
+    </div>
+    <svg id="sim24Chart" viewBox="0 0 800 170" style="width:100%; display:block; background:var(--asphalt-light); border-radius:8px;"></svg>
+    <div style="display:flex; gap:20px; align-items:center; margin-top:8px; font-family:var(--mono); font-size:10px;">
+      <span style="color:var(--green);">● Monte Carlo (Python backend)</span>
+      <span style="color:var(--red);">● Fixed Timer (equal split)</span>
+      <span style="color:#f0b429; font-size:9px; opacity:0.7;">▓ rush hour</span>
+      <span id="sim24Summary" style="margin-left:auto; color:var(--green); font-weight:700;"></span>
+    </div>
   </div>
 
   <footer>T-junction layout — North has no straight option (turns left/right only); West/East can go straight or turn onto North. Cars continue driving after the turn until they exit the screen.</footer>
@@ -725,6 +747,7 @@ document.getElementById("simSpeed").addEventListener("input", e => {
   state.speed = parseInt(e.target.value);
   document.getElementById("lblSpeed").textContent = state.speed + "x";
 });
+
 document.getElementById("modeMonteCarlo").addEventListener("click", () => {
   state.mode = "montecarlo";
   document.getElementById("modeMonteCarlo").classList.add("active");
@@ -747,6 +770,10 @@ document.getElementById("startBtn").addEventListener("click", () => {
   }
 });
 document.getElementById("resetBtn").addEventListener("click", () => {
+  // Stop 24h sim if active
+  if (SIM24.handle) { clearInterval(SIM24.handle); SIM24.handle = null; }
+  SIM24.active = false;
+  document.getElementById("sim24Panel").style.display = "none";
   state.running = false;
   clearInterval(tickHandle);
   tickHandle = null;
@@ -896,6 +923,274 @@ async function runDailyComparison() {
 }
 
 document.getElementById("runComparisonBtn").addEventListener("click", runDailyComparison);
+
+/* =====================================================================
+   24-HOUR REPLAY ENGINE
+   One /api/24h-plan request pre-computes all 1440 cycles for both MC
+   and Fixed Timer. tick24h() then plays it back at `state.speed` cycles
+   per tick — at 100x that's ~3 seconds for the full day. The junction
+   SVG shows approximate queue state; the chart is the primary output.
+===================================================================== */
+const SIM24 = {
+  plan:      null,   // {cycles: [...], num_cycles: 1440}
+  idx:       0,      // current playback position
+  mcHist:    [],     // total-cars-waiting per cycle, MC strategy
+  fixedHist: [],     // total-cars-waiting per cycle, Fixed Timer strategy
+  handle:    null,   // setInterval handle
+  active:    false,
+};
+
+/* --- sync junction car dots to a given set of queue counts ---------- */
+function syncCarsToQueues(targetQueues) {
+  // Drop all driving cars (they'd be at wrong positions after a jump)
+  state.cars = state.cars.filter(c => c.status === "queued");
+
+  APPROACHES.forEach((a, i) => {
+    const target  = Math.max(0, Math.round(targetQueues[i]));
+    const current = state.cars.filter(c => c.approach === a.id && c.status === "queued").length;
+
+    if (current > target) {
+      let excess = current - target;
+      state.cars = state.cars.filter(c => {
+        if (c.approach === a.id && c.status === "queued" && excess > 0) { excess--; return false; }
+        return true;
+      });
+    } else {
+      for (let q = current; q < target; q++) spawnArrival(a.id);
+    }
+    reflowQueue(a.id);
+  });
+}
+
+/* --- render the live dual-line chart -------------------------------- */
+function renderSim24Chart() {
+  const svgEl = document.getElementById("sim24Chart");
+  if (!svgEl || !SIM24.plan) return;
+
+  const total = SIM24.plan.num_cycles;   // 1440
+  const VW = 800, VH = 170;
+  const P  = { t: 14, r: 18, b: 30, l: 42 };
+  const CW = VW - P.l - P.r;
+  const CH = VH - P.t - P.b;
+
+  /* down-sample to ≤ 600 points so polyline stays fast */
+  const res = Math.max(1, Math.ceil(SIM24.mcHist.length / 600));
+  const mc  = SIM24.mcHist.filter(  (_, i) => i % res === 0);
+  const fx  = SIM24.fixedHist.filter((_, i) => i % res === 0);
+  const all = [...mc, ...fx];
+  const maxV = all.length ? Math.max(...all, 8) : 20;
+
+  const xS = idx => P.l + (idx / total) * CW;          // cycle index → SVG x
+  const yS = v   => P.t + CH - Math.min((v / maxV) * CH, CH);  // value → SVG y
+
+  let h = '';
+
+  /* rush-hour shading: 8am = cycles 480-539, 6pm = cycles 1080-1139 */
+  const rushPairs = [[480, 540], [1080, 1140]];
+  rushPairs.forEach(([s, e]) => {
+    h += `<rect x="${xS(s)}" y="${P.t}" width="${xS(e)-xS(s)}" height="${CH}"
+               fill="#f0b429" opacity="0.07"/>`;
+  });
+
+  /* vertical grid + hour labels every 3h, major every 6h */
+  for (let hr = 0; hr <= 24; hr += 3) {
+    const x      = xS(hr * 60);
+    const isMajor = hr % 6 === 0;
+    h += `<line x1="${x}" y1="${P.t}" x2="${x}" y2="${P.t+CH}"
+                stroke="#3c4250" stroke-width="${isMajor ? 1 : 0.5}"
+                opacity="${isMajor ? 0.9 : 0.4}"/>`;
+    if (isMajor) {
+      const lbl = hr === 0 || hr === 24 ? 'mid' : hr + 'h';
+      h += `<text x="${x}" y="${VH - 6}" text-anchor="middle"
+                  fill="#5a6070" font-size="10" font-family="monospace">${lbl}</text>`;
+    }
+  }
+
+  /* rush-hour label */
+  rushPairs.forEach(([s, e]) => {
+    h += `<text x="${xS((s+e)/2)}" y="${P.t + 12}" text-anchor="middle"
+                fill="#f0b429" font-size="8" font-family="monospace" opacity="0.7">rush</text>`;
+  });
+
+  /* horizontal grid + Y labels */
+  const yStep = Math.max(1, Math.ceil(maxV / 5));
+  for (let v = 0; v <= maxV; v += yStep) {
+    const y = yS(v);
+    h += `<line x1="${P.l}" y1="${y}" x2="${P.l+CW}" y2="${y}"
+                stroke="#3c4250" stroke-width="0.5" opacity="0.5"/>`;
+    h += `<text x="${P.l - 5}" y="${y + 3}" text-anchor="end"
+                fill="#5a6070" font-size="9" font-family="monospace">${v}</text>`;
+  }
+
+  /* border */
+  h += `<rect x="${P.l}" y="${P.t}" width="${CW}" height="${CH}"
+             fill="none" stroke="#3c4250" stroke-width="1"/>`;
+
+  /* Fixed Timer line (red, under) */
+  if (fx.length > 1) {
+    const pts = fx.map((v, i) => `${xS(i * res)},${yS(v)}`).join(' ');
+    h += `<polyline points="${pts}" fill="none" stroke="#e6483f" stroke-width="1.5" opacity="0.8"/>`;
+  }
+
+  /* MC line (green, on top) */
+  if (mc.length > 1) {
+    const pts = mc.map((v, i) => `${xS(i * res)},${yS(v)}`).join(' ');
+    h += `<polyline points="${pts}" fill="none" stroke="#34b56f" stroke-width="2.2"/>`;
+  }
+
+  /* progress cursor */
+  if (SIM24.idx > 0 && SIM24.idx < total) {
+    const cx = xS(SIM24.idx);
+    h += `<line x1="${cx}" y1="${P.t}" x2="${cx}" y2="${P.t+CH}"
+                stroke="#5b8cff" stroke-width="1.5" opacity="0.9"/>`;
+  }
+
+  svgEl.innerHTML = h;
+}
+
+/* --- one tick of the 24h replay ------------------------------------ */
+function tick24h() {
+  if (!SIM24.active || !SIM24.plan) return;
+
+  const total        = SIM24.plan.num_cycles;
+  const cyclesPerTick = Math.max(1, state.speed);   // 1–100 cycles per 200ms tick
+
+  for (let c = 0; c < cyclesPerTick && SIM24.idx < total; c++) {
+    const pc = SIM24.plan.cycles[SIM24.idx];
+
+    /* record history for chart */
+    SIM24.mcHist.push(  pc.mc_q.reduce(   (s, v) => s + v, 0));
+    SIM24.fixedHist.push(pc.fixed_q.reduce((s, v) => s + v, 0));
+
+    /* update visual state from plan */
+    state.queues     = pc.mc_q.map(v => Math.max(0, Math.round(v)));
+    state.greenSplit = pc.mc_split;
+
+    /* show the approach with the largest green allocation as "active" */
+    const maxGreen   = Math.max(...pc.mc_split);
+    state.activeApproach = pc.mc_split.indexOf(maxGreen);
+    state.phase      = "green";
+
+    /* update live arrival rates (used for display, not actual arrivals
+       since queues are driven by plan data) */
+    APPROACHES.forEach((a, i) => { a._currentRate = pc.rates[i]; });
+
+    SIM24.idx++;
+  }
+
+  /* reconcile car dots with updated queue lengths */
+  syncCarsToQueues(state.queues);
+
+  /* update clock and progress */
+  const last = SIM24.plan.cycles[Math.max(0, SIM24.idx - 1)];
+  const cycleInHour = (SIM24.idx - 1) % 60;
+  document.getElementById("sim24Clock").textContent =
+    String(last.hour).padStart(2, "0") + ":" + String(cycleInHour).padStart(2, "0");
+  document.getElementById("sim24Progress").textContent =
+    `Cycle ${SIM24.idx} / ${total}  ·  Hour ${last.hour}`;
+  document.getElementById("statCycles").textContent = SIM24.idx;
+
+  /* update junction visual */
+  updateSignalLights();
+  refreshApproachList();
+  renderCars();
+  renderSim24Chart();
+
+  /* completion */
+  if (SIM24.idx >= total) {
+    const mcAvg  = SIM24.mcHist.reduce(   (s, v) => s + v, 0) / SIM24.mcHist.length;
+    const fxAvg  = SIM24.fixedHist.reduce((s, v) => s + v, 0) / SIM24.fixedHist.length;
+    const imp    = ((fxAvg - mcAvg) / fxAvg * 100).toFixed(1);
+    const mcPeak = Math.max(...SIM24.mcHist).toFixed(0);
+    const fxPeak = Math.max(...SIM24.fixedHist).toFixed(0);
+
+    document.getElementById("sim24Progress").textContent  = "✓ 24h complete";
+    document.getElementById("sim24Summary").textContent   =
+      `MC avg ${mcAvg.toFixed(1)} waiting  ·  Fixed avg ${fxAvg.toFixed(1)}  ·  ${imp}% less wait with MC  ·  peak: MC ${mcPeak} vs Fixed ${fxPeak}`;
+    document.getElementById("sim24Clock").textContent     = "24:00";
+
+    state.phase          = "idle";
+    state.activeApproach = -1;
+    updateSignalLights();
+    clearInterval(SIM24.handle);
+    SIM24.handle = null;
+    SIM24.active = false;
+  }
+}
+
+/* --- load plan and kick off playback -------------------------------- */
+async function startSim24() {
+  const btn = document.getElementById("sim24Btn");
+  btn.disabled = true;
+  btn.textContent = "Loading…";
+
+  /* stop normal sim if running */
+  if (state.running) {
+    state.running = false;
+    clearInterval(tickHandle);
+    tickHandle = null;
+    document.getElementById("startBtn").textContent = "Start";
+  }
+  if (SIM24.handle) { clearInterval(SIM24.handle); SIM24.handle = null; }
+
+  document.getElementById("sim24Panel").style.display = "block";
+  document.getElementById("sim24Progress").textContent =
+    "Pre-computing 24-hour plan on backend… (a few seconds)";
+  document.getElementById("sim24Summary").textContent  = "";
+  document.getElementById("sim24Chart").innerHTML      = "";
+  document.getElementById("sim24Clock").textContent    = "00:00";
+
+  try {
+    const resp = await fetch("/api/24h-plan");
+    if (!resp.ok) throw new Error(`Server error (${resp.status})`);
+    SIM24.plan = await resp.json();
+  } catch (err) {
+    document.getElementById("sim24Progress").textContent = "Error: " + err.message;
+    btn.disabled = false;
+    btn.textContent = "⏱ Sim 24h";
+    return;
+  }
+
+  /* reset playback state */
+  SIM24.idx      = 0;
+  SIM24.mcHist   = [];
+  SIM24.fixedHist = [];
+  SIM24.active   = true;
+
+  /* reset junction visuals */
+  state.queues = [4, 2, 3];
+  state.cars   = [];
+  [4, 2, 3].forEach((count, i) => {
+    for (let q = 0; q < count; q++) spawnArrival(APPROACHES[i].id);
+  });
+  state.phase          = "idle";
+  state.activeApproach = -1;
+  state.cyclesRun      = 0;
+  state.totalCleared   = 0;
+  state.totalWaitSum   = 0;
+  buildStaticScene();
+  refreshApproachList();
+  renderCars();
+
+  btn.disabled    = false;
+  btn.textContent = "⏱ Sim 24h";
+
+  document.getElementById("sim24Progress").textContent =
+    `Playing back ${SIM24.plan.num_cycles} cycles — use speed slider to change pace`;
+
+  SIM24.handle = setInterval(tick24h, TICK_MS);
+}
+
+/* --- wire up buttons ----------------------------------------------- */
+document.getElementById("sim24Btn").addEventListener("click", startSim24);
+document.getElementById("sim24StopBtn").addEventListener("click", () => {
+  if (SIM24.handle) { clearInterval(SIM24.handle); SIM24.handle = null; }
+  SIM24.active          = false;
+  state.phase           = "idle";
+  state.activeApproach  = -1;
+  updateSignalLights();
+  document.getElementById("sim24Panel").style.display = "none";
+});
 </script>
 </body>
 </html>
