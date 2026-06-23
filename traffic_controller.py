@@ -41,8 +41,6 @@ import numpy as np
 from ultralytics import YOLO
 import RPi.GPIO as gp
 from picamera2 import Picamera2
-from picamera2.encoders import MJPEGEncoder
-from picamera2.outputs import FileOutput
 
 # generate_candidate_splits is pure math (no randomness) — safe to reuse.
 # We do NOT import monte_carlo_best_split because we use the CRN-enhanced
@@ -218,9 +216,10 @@ class YOLOVehicleDetector:
             print(f"[YOLO] Vehicle class IDs (fallback COCO): {vehicle_class_ids}")
         print("[YOLO] Model ready")
 
-    def count_vehicles(self, bgr_frame) -> int:
+    def detect(self, bgr_frame):
+        """Returns (vehicle_count, annotated_bgr_frame)."""
         if bgr_frame is None or bgr_frame.size == 0:
-            return 0
+            return 0, bgr_frame
         results = self.model.predict(
             source=bgr_frame, conf=self.conf_threshold, imgsz=320, verbose=False
         )
@@ -228,10 +227,11 @@ class YOLOVehicleDetector:
         if boxes and len(boxes) > 0:
             detected = [(int(b.cls), float(b.conf)) for b in boxes]
             print(f"[YOLO] Raw detections: {detected}")
-        return sum(
-            1 for box in boxes
-            if int(box.cls) in self._vehicle_ids
-        )
+        count = sum(1 for box in boxes if int(box.cls) in self._vehicle_ids)
+        return count, results[0].plot()  # plot() returns BGR with boxes + labels drawn
+
+    def count_vehicles(self, bgr_frame) -> int:
+        return self.detect(bgr_frame)[0]
 
 
 # ─────────────────────── MJPEG STREAMING LAYER ───────────────────────────────
@@ -403,19 +403,31 @@ def camera_and_detection_loop(detector: YOLOVehicleDetector):
 
             try:
                 picam2.configure(
-                    picam2.create_video_configuration(main={"size": RESOLUTION})
+                    picam2.create_video_configuration(
+                        main={"size": RESOLUTION, "format": "BGR888"}
+                    )
                 )
-                picam2.start_recording(MJPEGEncoder(), FileOutput(buf))
+                picam2.start()
 
-                deadline = time.time() + CYCLE_TIME
+                deadline     = time.time() + CYCLE_TIME
+                last_detect  = 0
+                last_display = None   # most recent annotated frame
+
                 while time.time() < deadline:
-                    jpeg = buf.latest_frame()
-                    if jpeg is not None:
-                        bgr   = jpeg_to_bgr(jpeg)
-                        count = detector.count_vehicles(bgr)
+                    bgr = picam2.capture_array()
+                    now = time.time()
+
+                    if now - last_detect >= DETECTION_INTERVAL:
+                        count, annotated = detector.detect(bgr)
                         sample_counts.append(count)
                         print(f"  [YOLO] cam {cam_id}: {count} vehicle(s) detected")
-                    time.sleep(DETECTION_INTERVAL)
+                        last_detect  = now
+                        last_display = annotated
+
+                    # Push annotated frame (or plain frame before first detection)
+                    display = last_display if last_display is not None else bgr
+                    _, jpeg = cv2.imencode(".jpg", display)
+                    buf.write(jpeg.tobytes())
 
             except Exception as exc:
                 print(f"[ERROR] Camera {cam_id}: {exc}")
@@ -423,7 +435,7 @@ def camera_and_detection_loop(detector: YOLOVehicleDetector):
 
             finally:
                 try:
-                    picam2.stop_recording()
+                    picam2.stop()
                     picam2.close()
                 except Exception:
                     pass
