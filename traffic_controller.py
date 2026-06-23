@@ -49,9 +49,6 @@ from monte_carlo_core import generate_candidate_splits
 
 # ══════════════════════════════ CONFIG ════════════════════════════════════════
 
-# Tracks which camera is currently active — updated by camera_and_detection_loop
-active_camera = None
-
 RESOLUTION          = (640, 480)
 HTTP_PORT           = 8000
 CAMERAS_TO_CYCLE    = ["B", "C", "D"]      # one camera = one traffic lane
@@ -59,7 +56,7 @@ CAMERAS_TO_CYCLE    = ["B", "C", "D"]      # one camera = one traffic lane
                                             # is hardcoded for 3 lanes
 
 # Camera timing
-CYCLE_TIME          = 10     # seconds each camera stays active per round
+CYCLE_TIME          = 5      # seconds each camera stays active per round
 DETECTION_INTERVAL  = 1.0    # seconds between YOLO grabs within each window
 
 # YOLO  ← set YOLO_MODEL_PATH to wherever your .onnx lives
@@ -68,18 +65,6 @@ YOLO_INPUT_SIZE     = (640, 640)
 CONF_THRESHOLD      = 0.40
 # COCO class IDs that count as "vehicles"
 VEHICLE_CLASS_IDS   = frozenset({2, 3, 5, 7})   # car, motorcycle, bus, truck
-
-# Traffic lights — BCM pin numbers from hardware spec
-TRAFFIC_LIGHTS = {
-    "A": {"red": 5,  "yellow": 6,  "green": 12},
-    "B": {"red": 13, "yellow": 19, "green": 16},
-    "C": {"red": 26, "yellow": 20, "green": 21},
-}
-YELLOW_TIME = 3   # seconds for yellow phase before switching
-
-# Camera B → Light A, Camera C → Light B, Camera D → Light C
-# Update this mapping once physical wiring is verified
-CAMERA_TO_LIGHT = {"B": "A", "C": "B", "D": "C"}
 
 # Monte Carlo
 MC_CYCLE_BUDGET     = 60    # total green-time budget per signal cycle (seconds)
@@ -92,7 +77,7 @@ MC_STEP             = 5     # search-step size for candidate generation (seconds
 # These are independent of queue depth — cars keep arriving on red too.
 # Tune these to match your actual junction; non-uniform is realistic.
 # (stats_comparison.py used [0.12, 0.18, 0.08] as an example.)
-MC_ARRIVAL_RATE_PER_LANE = [0.10, 0.10, 0.10]   # [lane_B, lane_C, lane_D]
+MC_ARRIVAL_RATE_PER_LANE = [0.12, 0.18, 0.08]   # [lane_B, lane_C, lane_D]
 
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -277,69 +262,26 @@ outputs: dict[str, StreamingOutput] = {cam: StreamingOutput() for cam in CAMERAS
 
 
 def _dashboard_html(cameras):
-    cam_ids = ", ".join(f'"{c}"' for c in cameras)
-    cards = "".join(f"""
-        <div class="cam-card" id="card-{c}">
-          <div class="cam-header">
-            <h3>LANE {c}</h3>
-            <div class="live-badge"><div class="rec"></div> LIVE</div>
-          </div>
-          <div class="status-label" id="status-{c}">STANDBY</div>
-          <img src="stream_{c}.mjpg" alt="Lane {c}" />
-        </div>
-    """ for c in cameras)
-    return f"""<!DOCTYPE html>
-<html>
-<head>
-  <title>Traffic Dashboard</title>
-  <style>
-    *{{box-sizing:border-box;margin:0;padding:0}}
-    body{{background:#0d0d0d;color:#fff;font-family:'Segoe UI',sans-serif}}
-    header{{display:flex;align-items:center;justify-content:center;gap:12px;padding:18px 0 10px}}
-    header h2{{font-size:1.3rem;letter-spacing:3px;color:#e0e0e0}}
-    .dot{{width:10px;height:10px;border-radius:50%;background:#4CAF50;box-shadow:0 0 8px #4CAF50;animation:pulse 1.5s infinite}}
-    @keyframes pulse{{0%,100%{{opacity:1}}50%{{opacity:0.3}}}}
-    .dashboard{{display:flex;justify-content:center;gap:28px;padding:20px;flex-wrap:wrap}}
-    .cam-card{{background:#1a1a1a;border:2px solid #333;border-radius:10px;padding:14px;text-align:center;width:340px;transition:border-color .3s,box-shadow .3s,opacity .3s;opacity:0.45}}
-    .cam-card.active{{border-color:#4CAF50;box-shadow:0 0 18px rgba(76,175,80,0.55);opacity:1}}
-    .cam-header{{display:flex;align-items:center;justify-content:center;gap:10px;margin-bottom:10px}}
-    .cam-header h3{{font-size:1rem;letter-spacing:1px;color:#ccc}}
-    .cam-card.active .cam-header h3{{color:#4CAF50}}
-    .live-badge{{display:none;align-items:center;gap:5px;background:#c0392b;color:#fff;font-size:.68rem;font-weight:700;letter-spacing:1px;padding:2px 8px;border-radius:4px}}
-    .live-badge .rec{{width:7px;height:7px;border-radius:50%;background:#fff;animation:pulse .9s infinite}}
-    .cam-card.active .live-badge{{display:flex}}
-    .status-label{{font-size:.7rem;color:#555;letter-spacing:1px;margin-bottom:8px;text-transform:uppercase}}
-    .cam-card.active .status-label{{color:#4CAF50}}
-    img{{width:100%;border-radius:6px;background:#000;display:block}}
-  </style>
-</head>
-<body>
-  <header>
-    <div class="dot"></div>
-    <h2>TRAFFIC DASHBOARD — AUTO CYCLING</h2>
-    <div class="dot"></div>
-  </header>
-  <div class="dashboard">{cards}</div>
-  <script>
-    const cameras = [{cam_ids}];
-    let currentActive = null;
-    function updateActive(cam) {{
-      if (cam === currentActive) return;
-      cameras.forEach(c => {{
-        const card = document.getElementById('card-' + c);
-        const status = document.getElementById('status-' + c);
-        if (c === cam) {{ card.classList.add('active'); status.textContent = 'LIVE'; }}
-        else {{ card.classList.remove('active'); status.textContent = 'STANDBY'; }}
-      }});
-      currentActive = cam;
-    }}
-    async function poll() {{
-      try {{ const d = await (await fetch('/active_cam')).json(); if (d.cam) updateActive(d.cam); }} catch(e) {{}}
-    }}
-    poll(); setInterval(poll, 500);
-  </script>
-</body>
-</html>"""
+    rows = "".join(
+        f'<div class="box"><h3>LANE {c}</h3>'
+        f'<img src="stream_{c}.mjpg" alt="Camera {c}"></div>'
+        for c in cameras
+    )
+    return (
+        "<html><head><title>Traffic Dashboard</title>"
+        "<style>"
+        "body{background:#111;color:#eee;font-family:sans-serif;margin:0}"
+        "h2{text-align:center;padding:18px 0;letter-spacing:2px}"
+        ".dash{display:flex;flex-wrap:wrap;justify-content:center;gap:24px;padding:16px}"
+        ".box{background:#1c1c1c;padding:14px;border-radius:8px;"
+        "     border:1px solid #333;text-align:center}"
+        "h3{color:#4CAF50;margin:0 0 10px}"
+        "img{display:block;width:100%;max-width:560px;border-radius:4px;background:#000}"
+        "</style></head><body>"
+        f"<h2>TRAFFIC DASHBOARD — AUTO CYCLING</h2>"
+        f"<div class='dash'>{rows}</div>"
+        "</body></html>"
+    )
 
 
 class StreamingHandler(server.BaseHTTPRequestHandler):
@@ -347,11 +289,6 @@ class StreamingHandler(server.BaseHTTPRequestHandler):
         if self.path in ("/", "/index.html"):
             body = _dashboard_html(CAMERAS_TO_CYCLE).encode()
             self._send(200, "text/html", body)
-
-        elif self.path == "/active_cam":
-            import json
-            body = json.dumps({"cam": active_camera}).encode()
-            self._send(200, "application/json", body)
 
         elif self.path.startswith("/stream_") and self.path.endswith(".mjpg"):
             cam_id = self.path[8:-5]        # strip "/stream_" and ".mjpg"
@@ -411,63 +348,19 @@ _CAM_HW = {
 
 def setup_gpio():
     gp.setwarnings(False)
-    gp.setmode(gp.BCM)
-    # Camera multiplexer pins (BCM equivalents of BOARD 7, 11, 12)
-    for pin in (4, 17, 18):
+    gp.setmode(gp.BOARD)
+    for pin in (7, 11, 12):
         gp.setup(pin, gp.OUT)
-    # Traffic light pins — start all red
-    for lane in TRAFFIC_LIGHTS.values():
-        for pin in lane.values():
-            gp.setup(pin, gp.OUT)
-            gp.output(pin, False)
-    all_red()
 
 
 def activate_camera(cam_id: str):
     """Select the given camera port via I²C + GPIO multiplexer."""
     hw = _CAM_HW[cam_id.upper()]
     os.system(f"sudo i2cset -y 10 0x70 0x00 {hw['i2c']}")
-    gp.output(4,  hw["pins"][0])
-    gp.output(17, hw["pins"][1])
-    gp.output(18, hw["pins"][2])
+    gp.output(7,  hw["pins"][0])
+    gp.output(11, hw["pins"][1])
+    gp.output(12, hw["pins"][2])
     time.sleep(1.5)   # electrical + sensor warm-up
-
-
-# ─────────────────────────── TRAFFIC LIGHT CONTROL ──────────────────────────
-
-def _set_light(light_id: str, red: bool, yellow: bool, green: bool):
-    pins = TRAFFIC_LIGHTS[light_id]
-    gp.output(pins["red"],    red)
-    gp.output(pins["yellow"], yellow)
-    gp.output(pins["green"],  green)
-
-
-def all_red():
-    for light_id in TRAFFIC_LIGHTS:
-        _set_light(light_id, red=True, yellow=False, green=False)
-
-
-def run_traffic_cycle(best_split: list):
-    """Run one full green-time cycle based on Monte Carlo split.
-    Sequence per lane: green → yellow (YELLOW_TIME s) → red, then next lane.
-    """
-    all_red()
-    for cam_id, green_seconds in zip(CAMERAS_TO_CYCLE, best_split):
-        light_id = CAMERA_TO_LIGHT[cam_id]
-        print(f"[LIGHT] Lane {light_id} → GREEN for {green_seconds}s")
-        _set_light(light_id, red=False, yellow=False, green=True)
-        time.sleep(green_seconds)
-
-        print(f"[LIGHT] Lane {light_id} → YELLOW")
-        _set_light(light_id, red=False, yellow=True, green=False)
-        time.sleep(YELLOW_TIME)
-
-        print(f"[LIGHT] Lane {light_id} → RED")
-        _set_light(light_id, red=True, yellow=False, green=False)
-
-    print("[LIGHT] Cycle complete — all red")
-
-# ─────────────────────────────────────────────────────────────────────────────
 
 
 def jpeg_to_bgr(jpeg_bytes: bytes):
@@ -497,14 +390,11 @@ def camera_and_detection_loop(detector: YOLOVehicleDetector):
     • print optimal green-time split
     • call send_to_arduino(best_split)  ← stubbed, wired in next step
     """
-    global active_camera
     while True:
         queue_counts: list[int] = []
-        all_red()   # keep lights red during the detection/scanning phase
 
         for cam_id in CAMERAS_TO_CYCLE:
             print(f"\n[CAM] ── Activating camera {cam_id} ──")
-            active_camera = cam_id
             activate_camera(cam_id)
 
             buf            = outputs[cam_id]
@@ -521,10 +411,10 @@ def camera_and_detection_loop(detector: YOLOVehicleDetector):
 
                 deadline     = time.time() + CYCLE_TIME
                 last_detect  = 0
-                last_display = None
+                last_display = None   # most recent annotated frame
 
                 while time.time() < deadline:
-                    bgr = cv2.cvtColor(picam2.capture_array(), cv2.COLOR_RGB2BGR)
+                    bgr = picam2.capture_array()
                     now = time.time()
 
                     if now - last_detect >= DETECTION_INTERVAL:
@@ -534,6 +424,7 @@ def camera_and_detection_loop(detector: YOLOVehicleDetector):
                         last_detect  = now
                         last_display = annotated
 
+                    # Push annotated frame (or plain frame before first detection)
                     display = last_display if last_display is not None else bgr
                     _, jpeg = cv2.imencode(".jpg", display)
                     buf.write(jpeg.tobytes())
@@ -550,7 +441,8 @@ def camera_and_detection_loop(detector: YOLOVehicleDetector):
                     pass
                 time.sleep(1.0)   # wait for kernel to release /dev/video0
 
-            lane_queue = max(sample_counts) if sample_counts else 0
+            # Use median to filter out single-frame outliers
+            lane_queue = int(np.median(sample_counts)) if sample_counts else 0
             print(f"[LANE] {cam_id} → queue estimate: {lane_queue} vehicle(s)")
             queue_counts.append(lane_queue)
 
@@ -567,7 +459,9 @@ def camera_and_detection_loop(detector: YOLOVehicleDetector):
         for cam_id, green_s in zip(CAMERAS_TO_CYCLE, best_split):
             print(f"     Lane {cam_id} → {green_s}s green")
 
-        run_traffic_cycle(best_split)
+        # ── TODO (next step): send timing to Arduino ──────────────────────
+        # send_to_arduino(best_split)
+        # ─────────────────────────────────────────────────────────────────
 
 
 # ─────────────────────────── ENTRY POINT ─────────────────────────────────────
