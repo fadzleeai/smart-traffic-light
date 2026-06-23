@@ -49,6 +49,9 @@ from monte_carlo_core import generate_candidate_splits
 
 # ══════════════════════════════ CONFIG ════════════════════════════════════════
 
+# Tracks which camera is currently active — updated by camera_and_detection_loop
+active_camera = None
+
 RESOLUTION          = (640, 480)
 HTTP_PORT           = 8000
 CAMERAS_TO_CYCLE    = ["B", "C", "D"]      # one camera = one traffic lane
@@ -262,26 +265,69 @@ outputs: dict[str, StreamingOutput] = {cam: StreamingOutput() for cam in CAMERAS
 
 
 def _dashboard_html(cameras):
-    rows = "".join(
-        f'<div class="box"><h3>LANE {c}</h3>'
-        f'<img src="stream_{c}.mjpg" alt="Camera {c}"></div>'
-        for c in cameras
-    )
-    return (
-        "<html><head><title>Traffic Dashboard</title>"
-        "<style>"
-        "body{background:#111;color:#eee;font-family:sans-serif;margin:0}"
-        "h2{text-align:center;padding:18px 0;letter-spacing:2px}"
-        ".dash{display:flex;flex-wrap:wrap;justify-content:center;gap:24px;padding:16px}"
-        ".box{background:#1c1c1c;padding:14px;border-radius:8px;"
-        "     border:1px solid #333;text-align:center}"
-        "h3{color:#4CAF50;margin:0 0 10px}"
-        "img{display:block;width:100%;max-width:560px;border-radius:4px;background:#000}"
-        "</style></head><body>"
-        f"<h2>TRAFFIC DASHBOARD — AUTO CYCLING</h2>"
-        f"<div class='dash'>{rows}</div>"
-        "</body></html>"
-    )
+    cam_ids = ", ".join(f'"{c}"' for c in cameras)
+    cards = "".join(f"""
+        <div class="cam-card" id="card-{c}">
+          <div class="cam-header">
+            <h3>LANE {c}</h3>
+            <div class="live-badge"><div class="rec"></div> LIVE</div>
+          </div>
+          <div class="status-label" id="status-{c}">STANDBY</div>
+          <img src="stream_{c}.mjpg" alt="Lane {c}" />
+        </div>
+    """ for c in cameras)
+    return f"""<!DOCTYPE html>
+<html>
+<head>
+  <title>Traffic Dashboard</title>
+  <style>
+    *{{box-sizing:border-box;margin:0;padding:0}}
+    body{{background:#0d0d0d;color:#fff;font-family:'Segoe UI',sans-serif}}
+    header{{display:flex;align-items:center;justify-content:center;gap:12px;padding:18px 0 10px}}
+    header h2{{font-size:1.3rem;letter-spacing:3px;color:#e0e0e0}}
+    .dot{{width:10px;height:10px;border-radius:50%;background:#4CAF50;box-shadow:0 0 8px #4CAF50;animation:pulse 1.5s infinite}}
+    @keyframes pulse{{0%,100%{{opacity:1}}50%{{opacity:0.3}}}}
+    .dashboard{{display:flex;justify-content:center;gap:28px;padding:20px;flex-wrap:wrap}}
+    .cam-card{{background:#1a1a1a;border:2px solid #333;border-radius:10px;padding:14px;text-align:center;width:340px;transition:border-color .3s,box-shadow .3s,opacity .3s;opacity:0.45}}
+    .cam-card.active{{border-color:#4CAF50;box-shadow:0 0 18px rgba(76,175,80,0.55);opacity:1}}
+    .cam-header{{display:flex;align-items:center;justify-content:center;gap:10px;margin-bottom:10px}}
+    .cam-header h3{{font-size:1rem;letter-spacing:1px;color:#ccc}}
+    .cam-card.active .cam-header h3{{color:#4CAF50}}
+    .live-badge{{display:none;align-items:center;gap:5px;background:#c0392b;color:#fff;font-size:.68rem;font-weight:700;letter-spacing:1px;padding:2px 8px;border-radius:4px}}
+    .live-badge .rec{{width:7px;height:7px;border-radius:50%;background:#fff;animation:pulse .9s infinite}}
+    .cam-card.active .live-badge{{display:flex}}
+    .status-label{{font-size:.7rem;color:#555;letter-spacing:1px;margin-bottom:8px;text-transform:uppercase}}
+    .cam-card.active .status-label{{color:#4CAF50}}
+    img{{width:100%;border-radius:6px;background:#000;display:block}}
+  </style>
+</head>
+<body>
+  <header>
+    <div class="dot"></div>
+    <h2>TRAFFIC DASHBOARD — AUTO CYCLING</h2>
+    <div class="dot"></div>
+  </header>
+  <div class="dashboard">{cards}</div>
+  <script>
+    const cameras = [{cam_ids}];
+    let currentActive = null;
+    function updateActive(cam) {{
+      if (cam === currentActive) return;
+      cameras.forEach(c => {{
+        const card = document.getElementById('card-' + c);
+        const status = document.getElementById('status-' + c);
+        if (c === cam) {{ card.classList.add('active'); status.textContent = 'LIVE'; }}
+        else {{ card.classList.remove('active'); status.textContent = 'STANDBY'; }}
+      }});
+      currentActive = cam;
+    }}
+    async function poll() {{
+      try {{ const d = await (await fetch('/active_cam')).json(); if (d.cam) updateActive(d.cam); }} catch(e) {{}}
+    }}
+    poll(); setInterval(poll, 500);
+  </script>
+</body>
+</html>"""
 
 
 class StreamingHandler(server.BaseHTTPRequestHandler):
@@ -289,6 +335,11 @@ class StreamingHandler(server.BaseHTTPRequestHandler):
         if self.path in ("/", "/index.html"):
             body = _dashboard_html(CAMERAS_TO_CYCLE).encode()
             self._send(200, "text/html", body)
+
+        elif self.path == "/active_cam":
+            import json
+            body = json.dumps({"cam": active_camera}).encode()
+            self._send(200, "application/json", body)
 
         elif self.path.startswith("/stream_") and self.path.endswith(".mjpg"):
             cam_id = self.path[8:-5]        # strip "/stream_" and ".mjpg"
@@ -390,11 +441,13 @@ def camera_and_detection_loop(detector: YOLOVehicleDetector):
     • print optimal green-time split
     • call send_to_arduino(best_split)  ← stubbed, wired in next step
     """
+    global active_camera
     while True:
         queue_counts: list[int] = []
 
         for cam_id in CAMERAS_TO_CYCLE:
             print(f"\n[CAM] ── Activating camera {cam_id} ──")
+            active_camera = cam_id
             activate_camera(cam_id)
 
             buf            = outputs[cam_id]
