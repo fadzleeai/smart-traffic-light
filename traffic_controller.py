@@ -92,7 +92,7 @@ MC_STEP             = 5     # search-step size for candidate generation (seconds
 # These are independent of queue depth — cars keep arriving on red too.
 # Tune these to match your actual junction; non-uniform is realistic.
 # (stats_comparison.py used [0.12, 0.18, 0.08] as an example.)
-MC_ARRIVAL_RATE_PER_LANE = [0.12, 0.18, 0.08]   # [lane_B, lane_C, lane_D]
+MC_ARRIVAL_RATE_PER_LANE = [0.10, 0.10, 0.10]   # [lane_B, lane_C, lane_D]
 
 # ══════════════════════════════════════════════════════════════════════════════
 
