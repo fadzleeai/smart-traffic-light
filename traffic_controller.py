@@ -61,7 +61,7 @@ CYCLE_TIME          = 5      # seconds each camera stays active per round
 DETECTION_INTERVAL  = 1.0    # seconds between YOLO grabs within each window
 
 # YOLO  ← set YOLO_MODEL_PATH to wherever your .onnx lives
-YOLO_MODEL_PATH     = "model.onnx"
+YOLO_MODEL_PATH     = "best (1).onnx"
 YOLO_INPUT_SIZE     = (640, 640)
 CONF_THRESHOLD      = 0.40
 # COCO class IDs that count as "vehicles"
