@@ -188,6 +188,11 @@ class YOLOVehicleDetector:
     in a single BGR frame, filtering by COCO vehicle class IDs.
     """
 
+    _VEHICLE_KEYWORDS = {
+        "car", "truck", "bus", "motorcycle", "motorbike",
+        "van", "vehicle", "suv", "pickup",
+    }
+
     def __init__(
         self,
         model_path: str         = YOLO_MODEL_PATH,
@@ -197,7 +202,20 @@ class YOLOVehicleDetector:
         print(f"[YOLO] Loading model: {model_path}")
         self.model          = YOLO(model_path)
         self.conf_threshold = conf_threshold
-        self._vehicle_ids   = set(vehicle_class_ids)
+        print(f"[YOLO] Model classes: {self.model.names}")
+
+        # Prefer auto-detection from model class names; fall back to the
+        # caller-supplied list (COCO IDs) only if no names match.
+        auto_ids = {
+            idx for idx, name in self.model.names.items()
+            if name.lower() in self._VEHICLE_KEYWORDS
+        }
+        if auto_ids:
+            self._vehicle_ids = auto_ids
+            print(f"[YOLO] Vehicle class IDs (from model): {auto_ids}")
+        else:
+            self._vehicle_ids = set(vehicle_class_ids)
+            print(f"[YOLO] Vehicle class IDs (fallback COCO): {vehicle_class_ids}")
         print("[YOLO] Model ready")
 
     def count_vehicles(self, bgr_frame) -> int:
@@ -206,8 +224,12 @@ class YOLOVehicleDetector:
         results = self.model.predict(
             source=bgr_frame, conf=self.conf_threshold, imgsz=320, verbose=False
         )
+        boxes = results[0].boxes
+        if boxes and len(boxes) > 0:
+            detected = [(int(b.cls), float(b.conf)) for b in boxes]
+            print(f"[YOLO] Raw detections: {detected}")
         return sum(
-            1 for box in results[0].boxes
+            1 for box in boxes
             if int(box.cls) in self._vehicle_ids
         )
 
