@@ -38,6 +38,7 @@ import time
 
 import cv2
 import numpy as np
+from ultralytics import YOLO
 import RPi.GPIO as gp
 from picamera2 import Picamera2
 from picamera2.encoders import MJPEGEncoder
@@ -183,59 +184,32 @@ def mc_best_split_crn(
 
 class YOLOVehicleDetector:
     """
-    Wraps cv2.dnn to load a YOLOv8-exported ONNX model and count vehicles
-    in a single BGR frame.
-
-    YOLOv8 ONNX output layout (post-export):
-        shape  → (1, 84, 8400)
-        cols 0-3  → bbox (cx, cy, w, h)   — not needed for counting
-        cols 4-83 → class scores for 80 COCO classes
-
-    Unlike v5/v7 there is NO separate objectness score; the class score IS
-    the final confidence.
+    Uses ultralytics YOLO to load a YOLOv8 ONNX model and count vehicles
+    in a single BGR frame, filtering by COCO vehicle class IDs.
     """
 
     def __init__(
         self,
         model_path: str         = YOLO_MODEL_PATH,
         conf_threshold: float   = CONF_THRESHOLD,
-        input_size: tuple       = YOLO_INPUT_SIZE,
         vehicle_class_ids       = VEHICLE_CLASS_IDS,
     ):
         print(f"[YOLO] Loading model: {model_path}")
-        self.net             = cv2.dnn.readNetFromONNX(model_path)
-        self.conf_threshold  = conf_threshold
-        self.input_size      = input_size
-        self._vehicle_ids    = np.array(list(vehicle_class_ids), dtype=np.int32)
+        self.model          = YOLO(model_path)
+        self.conf_threshold = conf_threshold
+        self._vehicle_ids   = set(vehicle_class_ids)
         print("[YOLO] Model ready")
 
-    def count_vehicles(self, bgr_frame) -> int: 
-        """
-        Run inference on one BGR frame.
-        Returns the integer number of vehicle detections above the
-        confidence threshold.  Returns 0 on bad / empty input.
-        """
+    def count_vehicles(self, bgr_frame) -> int:
         if bgr_frame is None or bgr_frame.size == 0:
             return 0
-
-        blob = cv2.dnn.blobFromImage(
-            bgr_frame,
-            scalefactor = 1 / 255.0,
-            size        = self.input_size,
-            swapRB      = True,
-            crop        = False,
+        results = self.model.predict(
+            source=bgr_frame, conf=self.conf_threshold, imgsz=320, verbose=False
         )
-        self.net.setInput(blob)
-        raw = self.net.forward()          # (1, 84, 8400)
-
-        preds      = raw[0].T             # (8400, 84)
-        cls_scores = preds[:, 4:]         # (8400, 80)  — skip bbox cols
-        max_scores = cls_scores.max(axis=1)
-        pred_cls   = cls_scores.argmax(axis=1)
-
-        conf_ok    = max_scores >= self.conf_threshold
-        vehicle_ok = np.isin(pred_cls, self._vehicle_ids)
-        return int((conf_ok & vehicle_ok).sum())
+        return sum(
+            1 for box in results[0].boxes
+            if int(box.cls) in self._vehicle_ids
+        )
 
 
 # ─────────────────────── MJPEG STREAMING LAYER ───────────────────────────────
@@ -464,7 +438,6 @@ def main():
     detector = YOLOVehicleDetector(
         model_path        = YOLO_MODEL_PATH,
         conf_threshold    = CONF_THRESHOLD,
-        input_size        = YOLO_INPUT_SIZE,
         vehicle_class_ids = VEHICLE_CLASS_IDS,
     )
 
