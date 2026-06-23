@@ -64,7 +64,7 @@ class QNetwork(nn.Module):
     slower to train with no real benefit here.
     """
 
-    def __init__(self, state_dim=3, num_actions=NUM_ACTIONS, hidden_size=64):
+    def __init__(self, state_dim=3, num_actions=NUM_ACTIONS, hidden_size=128):
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(state_dim, hidden_size),
@@ -124,9 +124,9 @@ class DQNAgent:
     STATE_SCALE = 50.0    # divide raw queue lengths by this before feeding the network
     REWARD_SCALE = 50.0   # divide raw rewards by this before computing loss
 
-    def __init__(self, state_dim=3, num_actions=NUM_ACTIONS, hidden_size=64,
-                 lr=1e-3, gamma=0.9, buffer_capacity=20000,
-                 batch_size=64, target_update_every=200, seed=None):
+    def __init__(self, state_dim=3, num_actions=NUM_ACTIONS, hidden_size=128,
+                 lr=1e-3, gamma=0.99, buffer_capacity=20000,           # Increased gamma to 0.99
+                 batch_size=64, target_update_every=800, seed=None):   # Slowed target update to 800
         if seed is not None:
             torch.manual_seed(seed)
         self.rng = random.Random(seed)
@@ -134,10 +134,12 @@ class DQNAgent:
         self.q_network = QNetwork(state_dim, num_actions, hidden_size)
         self.target_network = QNetwork(state_dim, num_actions, hidden_size)
         self.target_network.load_state_dict(self.q_network.state_dict())
-        self.target_network.eval()  # target network is never trained directly
+        self.target_network.eval() 
 
         self.optimizer = optim.Adam(self.q_network.parameters(), lr=lr)
-        self.loss_fn = nn.MSELoss()
+        
+        # HUBER LOSS MODIFICATION: Prevents exploding gradients on massive traffic jams
+        self.loss_fn = nn.SmoothL1Loss() 
 
         self.gamma = gamma
         self.batch_size = batch_size
@@ -188,11 +190,12 @@ class DQNAgent:
         # Current Q-value estimates for the actions actually taken
         current_q = self.q_network(states).gather(1, actions.unsqueeze(1)).squeeze(1)
 
-        # Target: reward + gamma * max_a' Q_target(s', a'), using the
-        # TARGET network (not the main network) for stability, and zeroing
-        # out the future-reward term for terminal (done) transitions.
+        # DDQN MODIFICATION: 
+        # 1. Main network selects the best next action
+        # 2. Target network evaluates the Q-value of that selected action
         with torch.no_grad():
-            max_next_q = self.target_network(next_states).max(dim=1)[0]
+            best_next_actions = self.q_network(next_states).argmax(dim=1, keepdim=True)
+            max_next_q = self.target_network(next_states).gather(1, best_next_actions).squeeze(1)
             target_q = rewards + self.gamma * max_next_q * (1 - dones)
 
         loss = self.loss_fn(current_q, target_q)

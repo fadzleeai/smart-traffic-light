@@ -23,9 +23,9 @@ from dqn_agent import DQNAgent
 TIERS = {"LOW": 0.15, "MED": 0.30, "HIGH": 0.45}
 TIER_NAMES = list(TIERS.keys())
 
-NUM_EPISODES = 3000
+NUM_EPISODES = 8000
 EPSILON_START = 1.0
-EPSILON_END = 0.05
+EPSILON_END = 0.01          # Dropped from 0.15 to stop late-stage self-sabotage
 EPSILON_DECAY_EPISODES = 2000
 EVAL_EVERY = 200          # run an evaluation pass every N episodes
 EVAL_SCENARIOS = [        # fixed scenarios used for every evaluation, for a consistent comparison over time
@@ -86,15 +86,23 @@ def main():
     agent = DQNAgent(seed=1)
 
     print(f"Training DQN for {NUM_EPISODES} episodes...")
-    print(f"(Arrival rates randomized per episode across LOW/MED/HIGH tiers)\n")
+    print(f"(Arrival rates randomized per episode across LOW/MED/HIGH tiers,")
+    print(f" starting queues also randomized per episode — fixes a real gap found")
+    print(f" via the 27-combination sweep: always starting at [4,2,3] meant the")
+    print(f" agent rarely practiced handling near-empty or already-heavy queues)\n")
 
     start_time = time.time()
     recent_losses = []
 
     for episode_num in range(NUM_EPISODES):
         rates = [TIERS[rng.choice(TIER_NAMES)] for _ in range(3)]
+        # Randomize starting queues each episode: 0-60 per lane covers
+        # everything from empty to heavily congested, so the agent gets
+        # real practice across the full range, not just whatever naturally
+        # builds up starting from one fixed small queue.
+        starting_queues = [rng.randint(0, 60) for _ in range(3)]
         env = TrafficEnv(arrival_rate_per_lane=rates, seed=None, episode_length=30, use_raw_state=True)
-        state = env.reset()
+        state = env.reset(initial_queues=starting_queues)
         epsilon = epsilon_for_episode(episode_num)
 
         done = False

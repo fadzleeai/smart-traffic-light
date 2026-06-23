@@ -58,6 +58,62 @@
   .log { font-family: var(--mono); font-size: 11px; color: var(--text-dim); max-height: 140px; overflow-y: auto; line-height: 1.6; }
   .log .hl { color: var(--accent); }
   footer { margin-top: 16px; font-family: var(--mono); font-size: 10px; color: var(--text-dim); text-align: center; }
+
+  /* ---- results slide-in panel ---- */
+  header { position: relative; }
+  #resultsBackdrop {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.5);
+    opacity: 0; pointer-events: none; transition: opacity 0.25s;
+    z-index: 90;
+  }
+  #resultsBackdrop.open { opacity: 1; pointer-events: auto; }
+
+  #resultsPanel {
+    position: fixed; top: 0; right: 0; bottom: 0;
+    width: 420px; max-width: 92vw;
+    background: var(--panel); border-left: 1px solid var(--line);
+    transform: translateX(100%); transition: transform 0.3s ease;
+    z-index: 100; padding: 20px; overflow-y: auto;
+    box-shadow: -8px 0 24px rgba(0,0,0,0.3);
+  }
+  #resultsPanel.open { transform: translateX(0); }
+
+  .results-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 18px; }
+  .results-header h2 { font-size: 16px; margin: 0; }
+  #closeResultsBtn { background: var(--line); color: var(--text); width: 30px; height: 30px; border-radius: 6px; padding: 0; font-size: 16px; line-height: 1; }
+
+  .level-row { display: flex; gap: 8px; margin-bottom: 16px; }
+  .level-row button { flex: 1; padding: 10px 8px; font-size: 12px; }
+  .level-row button.active { background: var(--accent); color: #fff; }
+  .level-row button:not(.active) { background: var(--asphalt-light); color: var(--text-dim); }
+  .lane-level-group { margin-bottom: 4px; }
+  .lane-level-label { display: flex; align-items: center; gap: 8px; font-family: var(--mono); font-size: 11px; color: var(--text-dim); margin-bottom: 8px; }
+  .lane-level-label .lane-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+
+  #runComparisonBtn { width: 100%; margin-bottom: 18px; }
+
+  .results-loading { text-align: center; padding: 30px 0; color: var(--text-dim); font-family: var(--mono); font-size: 12px; }
+  .results-loading .spinner {
+    width: 28px; height: 28px; margin: 0 auto 12px; border-radius: 50%;
+    border: 3px solid var(--line); border-top-color: var(--accent);
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .results-empty { text-align: center; padding: 40px 0; color: var(--text-dim); font-family: var(--mono); font-size: 12px; }
+
+  .headline-stat { text-align: center; padding: 20px 0; border-bottom: 1px solid var(--line); margin-bottom: 16px; }
+  .headline-stat .big-num { font-family: var(--mono); font-size: 38px; font-weight: 700; color: var(--green); }
+  .headline-stat .big-label { font-family: var(--mono); font-size: 11px; color: var(--text-dim); text-transform: uppercase; margin-top: 4px; }
+
+  .compare-table { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 12px; }
+  .compare-table th { text-align: left; color: var(--text-dim); font-weight: 500; padding: 6px 0; border-bottom: 1px solid var(--line); font-size: 10px; text-transform: uppercase; }
+  .compare-table td { padding: 8px 0; border-bottom: 1px solid var(--line); }
+  .compare-table td.num { text-align: right; font-weight: 600; }
+  .compare-table td.mc-col { color: var(--green); }
+  .compare-table td.fixed-col { color: var(--text-dim); }
+
+  .results-meta { font-family: var(--mono); font-size: 10px; color: var(--text-dim); margin-top: 16px; line-height: 1.6; }
 </style>
 </head>
 <body>
@@ -66,6 +122,7 @@
   <header>
     <h1>Monte Carlo <span>T-Junction Sim</span></h1>
     <div class="subtitle">T-junction · North / West / East · Monte Carlo runs in Python (Flask), JS handles rendering only</div>
+    <button class="btn-primary" id="openResultsBtn" style="margin-left:auto;">Results &rsaquo;</button>
   </header>
 
   <div class="layout">
@@ -100,7 +157,7 @@
         </div>
         <div class="field">
           <label>Sim speed <b id="lblSpeed">1x</b></label>
-          <input type="range" id="simSpeed" min="1" max="4" step="1" value="1">
+          <input type="range" id="simSpeed" min="1" max="20" step="1" value="1">
         </div>
 
         <button class="btn-primary" id="startBtn">Start</button>
@@ -121,6 +178,49 @@
   </div>
 
   <footer>T-junction layout — North has no straight option (turns left/right only); West/East can go straight or turn onto North. Cars continue driving after the turn until they exit the screen.</footer>
+</div>
+
+<div id="resultsBackdrop"></div>
+<div id="resultsPanel">
+  <div class="results-header">
+    <h2>Daily Comparison</h2>
+    <button id="closeResultsBtn">&times;</button>
+  </div>
+
+  <p class="panel-title" style="margin-bottom:8px;">Traffic level per approach</p>
+
+  <div class="lane-level-group">
+    <div class="lane-level-label"><span class="lane-dot" style="background:#e6483f"></span>North</div>
+    <div class="level-row" data-lane="north">
+      <button class="level-btn" data-level="low">Low</button>
+      <button class="level-btn active" data-level="medium">Medium</button>
+      <button class="level-btn" data-level="high">High</button>
+    </div>
+  </div>
+
+  <div class="lane-level-group">
+    <div class="lane-level-label"><span class="lane-dot" style="background:#34b56f"></span>West</div>
+    <div class="level-row" data-lane="west">
+      <button class="level-btn" data-level="low">Low</button>
+      <button class="level-btn active" data-level="medium">Medium</button>
+      <button class="level-btn" data-level="high">High</button>
+    </div>
+  </div>
+
+  <div class="lane-level-group">
+    <div class="lane-level-label"><span class="lane-dot" style="background:#5b8cff"></span>East</div>
+    <div class="level-row" data-lane="east">
+      <button class="level-btn" data-level="low">Low</button>
+      <button class="level-btn active" data-level="medium">Medium</button>
+      <button class="level-btn" data-level="high">High</button>
+    </div>
+  </div>
+
+  <button class="btn-primary" id="runComparisonBtn">Run 24-hour comparison</button>
+
+  <div id="resultsContent">
+    <div class="results-empty">Pick a traffic level and run the comparison to see results.</div>
+  </div>
 </div>
 
 <script>
@@ -450,7 +550,7 @@ async function startNewCycle() {
 
   const splitStr = APPROACHES.map((a,i) => `${a.id}:${state.greenSplit[i]}s`).join("  ");
   if (state.mode === "montecarlo" && result.score !== null) {
-    log(`Cycle ${state.cyclesRun} — Monte Carlo (Python backend): <span class="hl">${splitStr}</span> (avg ${result.score.toFixed(1)} left waiting)`);
+    log(`Cycle ${state.cyclesRun} — Monte Carlo (Python backend): <span class="hl">${splitStr}</span>`);
   } else {
     log(`Cycle ${state.cyclesRun} — Fixed timer: ${splitStr}`);
   }
@@ -686,6 +786,116 @@ setInterval(() => {
   document.getElementById("statAvgWait").textContent =
     state.totalCleared > 0 ? (state.totalWaitSum / state.totalCleared).toFixed(1) + "s" : "0";
 }, 200);
+
+/* =====================================================================
+   RESULTS PANEL — slide-in 24-hour congestion-level comparison
+===================================================================== */
+let selectedLevels = { north: "medium", west: "medium", east: "medium" };
+
+const resultsPanel = document.getElementById("resultsPanel");
+const resultsBackdrop = document.getElementById("resultsBackdrop");
+const resultsContent = document.getElementById("resultsContent");
+
+function openResultsPanel() {
+  resultsPanel.classList.add("open");
+  resultsBackdrop.classList.add("open");
+}
+function closeResultsPanel() {
+  resultsPanel.classList.remove("open");
+  resultsBackdrop.classList.remove("open");
+}
+
+document.getElementById("openResultsBtn").addEventListener("click", openResultsPanel);
+document.getElementById("closeResultsBtn").addEventListener("click", closeResultsPanel);
+resultsBackdrop.addEventListener("click", closeResultsPanel);
+
+document.querySelectorAll(".level-row").forEach(row => {
+  const lane = row.dataset.lane; // "north", "west", or "east"
+  row.querySelectorAll(".level-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      selectedLevels[lane] = btn.dataset.level;
+      row.querySelectorAll(".level-btn").forEach(b => b.classList.remove("active"));
+      btn.classList.add("active");
+    });
+  });
+});
+
+function renderResults(data) {
+  const mc = data.monte_carlo;
+  const fx = data.fixed_timer;
+  resultsContent.innerHTML = `
+    <div class="headline-stat">
+      <div class="big-num">${data.improvement_pct}%</div>
+      <div class="big-label">less average wait vs fixed timer</div>
+    </div>
+    <table class="compare-table">
+      <thead>
+        <tr><th></th><th style="text-align:right">Monte Carlo</th><th style="text-align:right">Fixed Timer</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Avg cars waiting/cycle</td>
+          <td class="num mc-col">${mc.avg_left_waiting.toFixed(1)}</td>
+          <td class="num fixed-col">${fx.avg_left_waiting.toFixed(1)}</td>
+        </tr>
+        <tr>
+          <td>Worst cycle (cars waiting)</td>
+          <td class="num mc-col">${mc.max_left_waiting.toFixed(1)}</td>
+          <td class="num fixed-col">${fx.max_left_waiting.toFixed(1)}</td>
+        </tr>
+        <tr>
+          <td>Total cars cleared</td>
+          <td class="num mc-col">${mc.total_cleared.toFixed(0)}</td>
+          <td class="num fixed-col">${fx.total_cleared.toFixed(0)}</td>
+        </tr>
+        <tr>
+          <td>End-of-day backlog</td>
+          <td class="num mc-col">${mc.final_backlog.toFixed(1)}</td>
+          <td class="num fixed-col">${fx.final_backlog.toFixed(1)}</td>
+        </tr>
+      </tbody>
+    </table>
+    <div class="results-meta">
+      Simulated 24-hour day · ${mc.num_cycles} decision cycles (${data.cycles_per_hour}/hour)
+      · North=${data.levels.north} West=${data.levels.west} East=${data.levels.east} · real Monte Carlo trials run on the
+      Python backend, not a client-side estimate.
+    </div>
+  `;
+}
+
+async function runDailyComparison() {
+  resultsContent.innerHTML = `
+    <div class="results-loading">
+      <div class="spinner"></div>
+      Running 24-hour simulation on the backend…
+    </div>
+  `;
+  try {
+    const response = await fetch("/api/daily-comparison", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        east_level: selectedLevels.east,
+        west_level: selectedLevels.west,
+        north_level: selectedLevels.north,
+      }),
+    });
+    if (!response.ok) {
+      const errBody = await response.json().catch(() => ({}));
+      throw new Error(errBody.error || `Request failed (${response.status})`);
+    }
+    const data = await response.json();
+    renderResults(data);
+  } catch (err) {
+    resultsContent.innerHTML = `
+      <div class="results-empty" style="color:var(--red)">
+        Error: ${err.message}
+      </div>
+    `;
+  }
+}
+
+document.getElementById("runComparisonBtn").addEventListener("click", runDailyComparison);
 </script>
 </body>
 </html>

@@ -19,6 +19,7 @@ Then open:
 
 from flask import Flask, request, jsonify, render_template
 import monte_carlo_core as mc
+import daily_comparison
 
 app = Flask(__name__)
 
@@ -91,6 +92,47 @@ def fixed_split_endpoint():
     cycle_budget = data.get("cycle_budget_seconds", 60)
     split = mc.fixed_split(num_lanes, cycle_budget_seconds=cycle_budget)
     return jsonify({"split": split})
+
+
+@app.route("/api/daily-comparison", methods=["POST"])
+def daily_comparison_endpoint():
+    """
+    Request body (JSON):
+        {
+            "east_level": "low" | "medium" | "high",
+            "west_level": "low" | "medium" | "high",
+            "north_level": "low" | "medium" | "high"
+        }
+
+    Runs a FULL server-side 24-hour simulated day (144 decision cycles,
+    6 per hour) for both Monte Carlo and Fixed Timer, using the realistic
+    hourly traffic curve, each lane independently scaled to its own
+    requested level. Takes a few seconds (real randomized Monte Carlo
+    trials, not instant) — the frontend should show a loading state.
+
+    Response body (JSON):
+        {
+            "levels": {"east": str, "west": str, "north": str},
+            "improvement_pct": float,
+            "monte_carlo": { "avg_left_waiting": float, "total_cleared": int,
+                              "total_arrived": int, "max_left_waiting": float,
+                              "final_backlog": float, "num_cycles": int },
+            "fixed_timer": { ...same shape... }
+        }
+    """
+    data = request.get_json(silent=True)
+    required_fields = ["east_level", "west_level", "north_level"]
+    if not data or any(f not in data for f in required_fields):
+        return jsonify({"error": f"Request must include {required_fields}, each 'low'/'medium'/'high'"}), 400
+
+    try:
+        result = daily_comparison.run_daily_comparison(
+            data["east_level"], data["west_level"], data["north_level"]
+        )
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+
+    return jsonify(result)
 
 
 if __name__ == "__main__":

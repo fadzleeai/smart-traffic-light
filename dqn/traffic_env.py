@@ -150,9 +150,17 @@ class TrafficEnv:
             return list(self.queues)  # raw, continuous — DQN reads this directly
         return state_from_queues(self.queues)  # bucketed — for tabular Q-learning
 
-    def reset(self):
-        """Start a new episode: fresh queues, fresh cycle counter."""
-        self.queues = [4, 2, 3]  # same starting point used elsewhere in the project
+    def reset(self, initial_queues=None):
+        """
+        Start a new episode: fresh queues, fresh cycle counter.
+        If initial_queues is not given, defaults to [4, 2, 3] (the original
+        fixed starting point used elsewhere in this project). Pass a
+        different list to start from a different queue state — used during
+        DQN training to randomize starting conditions so the agent gets
+        real practice across the full range of queue sizes, not just
+        whatever naturally builds up starting from one fixed small queue.
+        """
+        self.queues = list(initial_queues) if initial_queues is not None else [4, 2, 3]
         self.cycle_count = 0
         return self._current_state()
 
