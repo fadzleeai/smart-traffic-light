@@ -32,7 +32,7 @@ import logging
 import random as _random
 import socketserver
 from http import server
-from threading import Condition, Lock, Thread
+from threading import Condition, Thread
 import os
 import time
 
@@ -247,39 +247,6 @@ class YOLOVehicleDetector:
 
     def count_vehicles(self, bgr_frame) -> int:
         return self.detect(bgr_frame)[0]
-
-
-class _YOLOThread:
-    """Runs YOLO in a background thread so the streaming loop never blocks."""
-
-    def __init__(self, detector: "YOLOVehicleDetector"):
-        self._detector  = detector
-        self._pending   = None   # newest frame waiting to be processed
-        self._annotated = None   # latest annotated result frame
-        self._count     = 0
-        self._lock      = Lock()
-        Thread(target=self._run, daemon=True).start()
-
-    def submit(self, bgr):
-        with self._lock:
-            self._pending = bgr  # always replace with the freshest frame
-
-    def result(self):
-        with self._lock:
-            return self._count, self._annotated
-
-    def _run(self):
-        while True:
-            with self._lock:
-                frame         = self._pending
-                self._pending = None
-            if frame is not None:
-                count, ann = self._detector.detect(frame)
-                with self._lock:
-                    self._count     = count
-                    self._annotated = ann
-            else:
-                time.sleep(0.01)
 
 
 # ─────────────────────── MJPEG STREAMING LAYER ───────────────────────────────
@@ -552,26 +519,24 @@ def camera_and_detection_loop(detector: YOLOVehicleDetector):
                 )
                 picam2.start()
 
-                yolo        = _YOLOThread(detector)
-                deadline    = time.time() + CYCLE_TIME
-                last_sample = 0
+                deadline     = time.time() + CYCLE_TIME
+                last_detect  = 0
+                last_display = None
 
                 while time.time() < deadline:
                     bgr = picam2.capture_array()
-                    yolo.submit(bgr)          # hand frame to background thread
-
-                    count, annotated = yolo.result()
                     now = time.time()
-                    if now - last_sample >= DETECTION_INTERVAL:
+
+                    if now - last_detect >= DETECTION_INTERVAL:
+                        count, annotated = detector.detect(bgr)
                         sample_counts.append(count)
                         print(f"  [YOLO] cam {cam_id}: {count} vehicle(s) detected")
-                        last_sample = now
+                        last_detect  = now
+                        last_display = annotated
 
-                    display = annotated if annotated is not None else bgr
-                    _, jpeg = cv2.imencode(".jpg", display,
-                                          [cv2.IMWRITE_JPEG_QUALITY, 70])
+                    display = last_display if last_display is not None else bgr
+                    _, jpeg = cv2.imencode(".jpg", display)
                     buf.write(jpeg.tobytes())
-                    time.sleep(0.033)         # ~30 fps cap
 
             except Exception as exc:
                 print(f"[ERROR] Camera {cam_id}: {exc}")
@@ -585,8 +550,7 @@ def camera_and_detection_loop(detector: YOLOVehicleDetector):
                     pass
                 time.sleep(1.0)   # wait for kernel to release /dev/video0
 
-            # Use median to filter out single-frame outliers
-            lane_queue = int(np.median(sample_counts)) if sample_counts else 0
+            lane_queue = max(sample_counts) if sample_counts else 0
             print(f"[LANE] {cam_id} → queue estimate: {lane_queue} vehicle(s)")
             queue_counts.append(lane_queue)
 
