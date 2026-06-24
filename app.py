@@ -20,6 +20,10 @@ Then open:
 from flask import Flask, request, jsonify, render_template
 import monte_carlo_core as mc
 import daily_comparison
+from hourly_rates import build_hourly_table as _build_hourly_table
+
+# Built once at startup — pure math, no I/O; avoids rebuilding on every /api/decide request
+_HOURLY_TABLE = _build_hourly_table()
 
 app = Flask(__name__)
 
@@ -34,16 +38,19 @@ def decide():
     """
     Request body (JSON):
         {
-            "queues": [int, int, int],       # required, current queue length per approach
-            "cycle_budget_seconds": int,      # optional, default 60
-            "arrival_rate_per_lane": [f,f,f], # optional, default [0.05]*3
-            "trials_per_candidate": int       # optional, default 300
+            "queues": [int, int, int],   # required, current queue length per approach [N, W, E]
+            "cycle_budget_seconds": int, # optional, default 60
+            "current_hour": int,         # optional 0-23, default 0 — selects arrival rates
+                                         # from the hourly_rates.py 24h curve for this hour
+            "trials_per_candidate": int  # optional, default 300
         }
 
     Response body (JSON):
         {
-            "split": [int, int, int],   # chosen green-time seconds per approach
-            "score": float               # avg cars left waiting under the chosen split
+            "split": [int, int, int],          # chosen green-time seconds per approach [N, W, E]
+            "score": float,                     # avg cars left waiting under the chosen split
+            "current_hour": int,                # the hour used for rate lookup (echoed back)
+            "arrival_rates": [float, float, float]  # rates used [N, W, E] from hourly curve
         }
     """
     data = request.get_json(silent=True)
@@ -57,11 +64,17 @@ def decide():
         return jsonify({"error": "'queues' must contain only non-negative numbers"}), 400
 
     cycle_budget = data.get("cycle_budget_seconds", 60)
-    arrival_rates = data.get("arrival_rate_per_lane")
     trials = data.get("trials_per_candidate", 300)
 
-    if arrival_rates is not None and len(arrival_rates) != len(queues):
-        return jsonify({"error": "'arrival_rate_per_lane' length must match 'queues' length"}), 400
+    # Derive arrival rates from hourly_rates.py based on current_hour (0-23).
+    # The frontend sends which hour of the day the simulation is on; the backend
+    # looks it up from the pre-built realistic 24h curve instead of a flat default.
+    current_hour = data.get("current_hour", 0)
+    if not isinstance(current_hour, int) or not (0 <= current_hour <= 23):
+        current_hour = 0
+    _row = _HOURLY_TABLE[current_hour]
+    # [North, West, East] order — matches frontend APPROACHES = [N, W, E]
+    arrival_rates = [_row["north"], _row["west"], _row["east"]]
 
     try:
         split, score = mc.monte_carlo_best_split(
@@ -73,7 +86,12 @@ def decide():
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
 
-    return jsonify({"split": split, "score": round(score, 2)})
+    return jsonify({
+        "split":         split,
+        "score":         round(score, 2),
+        "current_hour":  current_hour,
+        "arrival_rates": [round(r, 5) for r in arrival_rates],
+    })
 
 
 @app.route("/api/fixed-split", methods=["POST"])

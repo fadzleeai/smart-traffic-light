@@ -10,11 +10,11 @@ Integrates three components into one runnable script:
 
 Data flow per full camera round
 ────────────────────────────────
-  Camera B active → grab frames every DETECTION_INTERVAL s → run YOLO
-  Camera C active → grab frames …
-  Camera D active → grab frames …
+  NORTH lane active (Camera B) → grab frames every DETECTION_INTERVAL s → run YOLO
+  EAST  lane active (Camera C) → grab frames …
+  WEST  lane active (Camera D) → grab frames …
          ↓
-  queue_counts = [median_B, median_C, median_D]
+  queue_counts = [median_NORTH, median_EAST, median_WEST]
   best_split, score = mc_best_split_crn(queue_counts)
          ↓
   Print optimal green-time split
@@ -54,9 +54,10 @@ active_camera = None
 
 RESOLUTION          = (640, 480)
 HTTP_PORT           = 8000
-CAMERAS_TO_CYCLE    = ["B", "C", "D"]      # one camera = one traffic lane
-                                            # keep exactly 3 — generate_candidate_splits
-                                            # is hardcoded for 3 lanes
+CAMERAS_TO_CYCLE    = ["NORTH", "EAST", "WEST"]  # one direction = one traffic lane
+                                                     # NORTH → Camera B  |  EAST → Camera C  |  WEST → Camera D
+                                                     # keep exactly 3 — generate_candidate_splits
+                                                     # is hardcoded for 3 lanes
 
 # Camera timing
 CYCLE_TIME          = 5      # seconds each camera stays active per round
@@ -71,15 +72,18 @@ VEHICLE_CLASS_IDS   = frozenset({2, 3, 5, 7})   # car, motorcycle, bus, truck
 
 # Traffic lights — BCM pin numbers from hardware spec
 TRAFFIC_LIGHTS = {
-    "A": {"red": 5,  "yellow": 6,  "green": 12},
-    "B": {"red": 13, "yellow": 19, "green": 16},
-    "C": {"red": 26, "yellow": 20, "green": 21},
+    "NORTH": {"red": 5,  "yellow": 6,  "green": 12},  # physical Light A  (BCM 5, 6, 12)
+    "EAST":  {"red": 13, "yellow": 19, "green": 16},  # physical Light B  (BCM 13, 19, 16)
+    "WEST":  {"red": 26, "yellow": 20, "green": 21},  # physical Light C  (BCM 26, 20, 21)
 }
 YELLOW_TIME = 3   # seconds for yellow phase before switching
 
-# Camera B → Light A, Camera C → Light B, Camera D → Light C
-# Update this mapping once physical wiring is verified
-CAMERA_TO_LIGHT = {"B": "A", "C": "B", "D": "C"}
+# Each direction maps to its own camera and light (1-to-1).
+# Physical hardware reference:
+#   NORTH → Camera B (i2c 0x05) + Light A (BCM 5/6/12)
+#   EAST  → Camera C (i2c 0x06) + Light B (BCM 13/19/16)
+#   WEST  → Camera D (i2c 0x07) + Light C (BCM 26/20/21)
+CAMERA_TO_LIGHT = {"NORTH": "NORTH", "EAST": "EAST", "WEST": "WEST"}
 
 # Monte Carlo
 MC_CYCLE_BUDGET     = 60    # total green-time budget per signal cycle (seconds)
@@ -92,7 +96,9 @@ MC_STEP             = 5     # search-step size for candidate generation (seconds
 # These are independent of queue depth — cars keep arriving on red too.
 # Tune these to match your actual junction; non-uniform is realistic.
 # (stats_comparison.py used [0.12, 0.18, 0.08] as an example.)
-MC_ARRIVAL_RATE_PER_LANE = [0.12, 0.18, 0.08]   # [lane_B, lane_C, lane_D]
+# MC_ARRIVAL_RATE_PER_LANE = [0.12, 0.18, 0.08]      # [NORTH, EAST, WEST] default
+# MC_ARRIVAL_RATE_PER_LANE = [0.022, 0.051, 0.051]   # [NORTH, EAST, WEST] low hour  (hour 0)
+MC_ARRIVAL_RATE_PER_LANE = [0.092, 0.148, 0.182]     # [NORTH, EAST, WEST] peak hour (hour 18)
 
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -281,11 +287,11 @@ def _dashboard_html(cameras):
     cards = "".join(f"""
         <div class="cam-card" id="card-{c}">
           <div class="cam-header">
-            <h3>LANE {c}</h3>
+            <h3>{c}</h3>
             <div class="live-badge"><div class="rec"></div> LIVE</div>
           </div>
           <div class="status-label" id="status-{c}">STANDBY</div>
-          <img src="stream_{c}.mjpg" alt="Lane {c}" />
+          <img src="stream_{c}.mjpg" alt="{c} lane" />
         </div>
     """ for c in cameras)
     return f"""<!DOCTYPE html>
@@ -402,10 +408,12 @@ class StreamingServer(socketserver.ThreadingMixIn, server.HTTPServer):
 # ─────────────────────────── HARDWARE HELPERS ────────────────────────────────
 
 _CAM_HW = {
-    "A": {"i2c": "0x04", "pins": (False, False, True)},
-    "B": {"i2c": "0x05", "pins": (True,  False, True)},
-    "C": {"i2c": "0x06", "pins": (False, True,  False)},
-    "D": {"i2c": "0x07", "pins": (True,  True,  False)},
+    # direction : I²C address + GPIO mux pin states (BCM 4, 17, 18)
+    "NORTH": {"i2c": "0x05", "pins": (True,  False, True)},   # physical Camera B
+    "EAST":  {"i2c": "0x06", "pins": (False, True,  False)},  # physical Camera C
+    "WEST":  {"i2c": "0x07", "pins": (True,  True,  False)},  # physical Camera D
+    # spare / unused:
+    # "CAM_A": {"i2c": "0x04", "pins": (False, False, True)}, # physical Camera A
 }
 
 

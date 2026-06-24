@@ -152,12 +152,8 @@
           <input type="range" id="cycleBudget" min="30" max="120" step="5" value="60">
         </div>
         <div class="field">
-          <label>Arrival intensity <b id="lblArrival">medium</b></label>
-          <input type="range" id="arrivalIntensity" min="1" max="3" step="1" value="2">
-        </div>
-        <div class="field">
           <label>Sim speed <b id="lblSpeed">1x</b></label>
-          <input type="range" id="simSpeed" min="1" max="100" step="1" value="1">
+          <input type="range" id="simSpeed" min="1" max="1000" step="1" value="1">
         </div>
 
         <button class="btn-primary" id="startBtn">Start</button>
@@ -178,7 +174,6 @@
 
   </div>
 
-  <!-- 24-hour replay panel — shown only while sim24 is running -->
   <div id="sim24Panel" class="panel" style="margin-top:16px; display:none;">
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; flex-wrap:wrap; gap:8px;">
       <div style="display:flex; align-items:center; gap:12px;">
@@ -352,22 +347,37 @@ function lerp(a, b, t) { return a + (b - a) * t; }
    via app.py), NOT in JS. This function just calls the API and returns the
    result. Fixed Timer mode stays client-side since it has no randomness.
 ===================================================================== */
-async function fetchMonteCarloSplit(queues, budget) {
+async function fetchMonteCarloSplit(queues, budget, isFixedMode = false) {
+  const current_hour = Math.floor((state.cyclesRun - 1) / 60) % 24;
+  
+  const payload = {
+    queues:               queues,
+    cycle_budget_seconds: budget,
+    current_hour:         current_hour,
+  };
+
+  // Tell the backend to skip the heavy Monte Carlo math if we just need the hour/rates
+  if (isFixedMode) {
+    payload.trials_per_candidate = 1; 
+  }
+
   const response = await fetch("/api/decide", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      queues: queues,
-      cycle_budget_seconds: budget,
-      arrival_rate_per_lane: APPROACHES.map(a => a.baseArrival * state.arrivalMultiplier),
-    }),
+    body: JSON.stringify(payload),
   });
+  
   if (!response.ok) {
     const errBody = await response.json().catch(() => ({}));
     throw new Error(errBody.error || `Backend request failed (${response.status})`);
   }
   const data = await response.json();
-  return { split: data.split, score: data.score };
+  return {
+    split:        data.split,
+    score:        data.score,
+    current_hour: data.current_hour,
+    arrival_rates: data.arrival_rates,
+  };
 }
 
 function fixedSplit(budget) {
@@ -381,7 +391,6 @@ function fixedSplit(budget) {
 let state = {
   mode: "montecarlo",
   cycleBudget: 60,
-  arrivalMultiplier: 1,
   speed: 1,
   running: false,
   queues: [3, 4, 2],          // North, West, East
@@ -547,14 +556,18 @@ async function startNewCycle() {
   const cycleNumber = state.cyclesRun;
 
   let result;
-  if (state.mode === "montecarlo") {
-    try {
-      result = await fetchMonteCarloSplit(state.queues, state.cycleBudget);
-    } catch (err) {
-      log(`<span class="hl">Backend error:</span> ${err.message} — falling back to fixed timer for this cycle`);
-      result = { split: fixedSplit(state.cycleBudget), score: null };
+  try {
+    // ALWAYS fetch from the backend to get the realistic hourly rates and current hour
+    // We pass a 3rd argument to tell the backend if we are in fixed mode
+    result = await fetchMonteCarloSplit(state.queues, state.cycleBudget, state.mode === "fixed");
+    
+    // If we are in fixed mode, override the Python math with our simple equal split
+    if (state.mode === "fixed") {
+      result.split = fixedSplit(state.cycleBudget);
+      result.score = null;
     }
-  } else {
+  } catch (err) {
+    log(`<span class="hl">Backend error:</span> ${err.message} — falling back to fixed timer for this cycle`);
     result = { split: fixedSplit(state.cycleBudget), score: null };
   }
 
@@ -564,18 +577,33 @@ async function startNewCycle() {
   if (state.cyclesRun !== cycleNumber || !state.running) return;
 
   state.greenSplit = result.split;
+
+  // FIX 1: Actually apply the backend's hourly arrival rates to the frontend traffic generator
+  if (result.arrival_rates) {
+    APPROACHES.forEach((a, i) => {
+      a.baseArrival = result.arrival_rates[i];
+    });
+  }
+
   state.approachOrder = [0, 1, 2];
   state.orderIdx = 0;
   state.activeApproach = state.approachOrder[0];
   state.phase = "green";
-  state.phaseTimer = state.greenSplit[state.activeApproach];
+  
+  // FIX 2: Subtract the 3s yellow light from the phase timer so the total cycle equals exactly 60s
+  state.phaseTimer = Math.max(0, state.greenSplit[state.activeApproach] - 3);
 
-  const splitStr = APPROACHES.map((a,i) => `${a.id}:${state.greenSplit[i]}s`).join("  ");
+  const splitStr  = APPROACHES.map((a,i) => `${a.id}:${state.greenSplit[i]}s`).join("  ");
+  const hourLabel = (result.current_hour !== undefined)
+    ? `<span style="color:var(--accent)">Hour ${String(result.current_hour).padStart(2,"0")}</span> · ` : "";
+    
   if (state.mode === "montecarlo" && result.score !== null) {
-    log(`Cycle ${state.cyclesRun} — Monte Carlo (Python backend): <span class="hl">${splitStr}</span>`);
+    log(`${hourLabel}Cycle ${state.cyclesRun} — Monte Carlo (Python backend): <span class="hl">${splitStr}</span>`);
   } else {
-    log(`Cycle ${state.cyclesRun} — Fixed timer: ${splitStr}`);
+    // Now Fixed Timer also prints the hour label!
+    log(`${hourLabel}Cycle ${state.cyclesRun} — Fixed timer: ${splitStr}`);
   }
+  
   document.getElementById("statCycles").textContent = state.cyclesRun;
   updateSignalLights();
   refreshApproachList();
@@ -590,7 +618,7 @@ function advancePhase() {
     if (state.orderIdx < state.approachOrder.length) {
       state.activeApproach = state.approachOrder[state.orderIdx];
       state.phase = "green";
-      state.phaseTimer = state.greenSplit[state.activeApproach];
+      state.phaseTimer = Math.max(0, state.greenSplit[state.activeApproach] - 3);
     } else {
       startNewCycle(); // intentionally not awaited here — tick() must stay
                         // synchronous; startNewCycle sets phase="deciding"
@@ -669,41 +697,56 @@ function spawnArrival(approachId) {
 
 function tick() {
   if (!state.running) return;
-  const dt = (TICK_MS / 1000) * state.speed;
-  state.simTime += dt;
 
-  // random new arrivals
-  APPROACHES.forEach((a, i) => {
-    const prob = a.baseArrival * state.arrivalMultiplier * dt;
-    if (Math.random() < prob) {
-      state.queues[i]++;
-      spawnArrival(a.id);
-    }
-  });
-
-  // release a car from the front of the active (green) approach periodically
-  if (state.phase === "green" && state.activeApproach >= 0) {
-    state._departTimer = (state._departTimer ?? SECONDS_PER_CAR) - dt;
-    if (state._departTimer <= 0) {
-      releaseCarIfDue();
-      state._departTimer += SECONDS_PER_CAR;
-    }
-  }
-
-  // While we're waiting on the backend for a new cycle's split, skip
-  // timer/phase advancement entirely — nothing should progress until
-  // startNewCycle() finishes and sets phase back to "green".
+  // If waiting on the network, only animate driving cars visually at 1x speed
+  // so they gracefully exit the intersection while the lights are frozen.
   if (state.phase === "deciding") {
+    advanceDrivingCars(TICK_MS / 1000); 
     renderCars();
     refreshApproachList();
     return;
   }
 
-  advanceDrivingCars(dt);
+  // THE PHYSICS FIX (Sub-stepping)
+  // Instead of doing one massive time jump, run the normal 0.2s math multiple 
+  // times behind the scenes before drawing the final result to the screen.
+  const baseDt = TICK_MS / 1000; // 0.2 seconds per physics step
 
-  state.phaseTimer -= dt;
-  if (state.phaseTimer <= 0) advancePhase();
+  for (let step = 0; step < state.speed; step++) {
+    // Stop fast-forwarding immediately if a cycle ends and we need the Python backend
+    if (state.phase === "deciding") break; 
 
+    state.simTime += baseDt;
+
+    // Fast-forward arrivals mathematically
+    APPROACHES.forEach((a, i) => {
+      a._arrivalAccumulator = (a._arrivalAccumulator || 0) + (a.baseArrival * baseDt);
+      while (a._arrivalAccumulator >= 1) {
+        state.queues[i]++;
+        spawnArrival(a.id);
+        a._arrivalAccumulator -= 1;
+      }
+    });
+
+    // Fast-forward departures mathematically (Green or Yellow)
+    if ((state.phase === "green" || state.phase === "yellow") && state.activeApproach >= 0) {
+      state._departTimer = (state._departTimer ?? SECONDS_PER_CAR) - baseDt;
+      if (state._departTimer <= 0) {
+        releaseCarIfDue();
+        state._departTimer += SECONDS_PER_CAR;
+      }
+    }
+
+    advanceDrivingCars(baseDt);
+
+    // Fast-forward traffic lights
+    state.phaseTimer -= baseDt;
+    if (state.phaseTimer <= 0) {
+      advancePhase(); 
+    }
+  }
+
+  // Draw the final state to the screen ONCE after doing all the fast math
   renderCars();
   refreshApproachList();
 }
@@ -736,12 +779,6 @@ function refreshApproachList() {
 document.getElementById("cycleBudget").addEventListener("input", e => {
   state.cycleBudget = parseInt(e.target.value);
   document.getElementById("lblCycle").textContent = state.cycleBudget + "s";
-});
-document.getElementById("arrivalIntensity").addEventListener("input", e => {
-  const map = {1: "low", 2: "medium", 3: "high"};
-  const mult = {1: 0.5, 2: 1, 3: 2};
-  state.arrivalMultiplier = mult[e.target.value];
-  document.getElementById("lblArrival").textContent = map[e.target.value];
 });
 document.getElementById("simSpeed").addEventListener("input", e => {
   state.speed = parseInt(e.target.value);
